@@ -464,7 +464,7 @@ export async function placeUserBid(sessionId: string, kind: "increment" | "pass"
       teamId: user.franchiseId,
     });
     await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "BIDDING", hammerCount: 0 } });
-    return tickAuction(sessionId, { forceAi: true });
+    return getSession(sessionId);
   }
 
   if (passed.includes(user.franchiseId)) throw new Error("You have already passed on this player.");
@@ -476,7 +476,7 @@ export async function placeUserBid(sessionId: string, kind: "increment" | "pass"
   if (err) throw new Error(err);
   await applyBid(session, lot, user.franchiseId, amount);
   await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "BIDDING", hammerCount: 0 } });
-  return tickAuction(sessionId, { forceAi: true });
+  return getSession(sessionId);
 }
 
 function validatePurchase(
@@ -520,7 +520,7 @@ async function load(id: string) {
   return session;
 }
 
-export async function tickAuction(sessionId: string, opts?: { forceAi?: boolean }) {
+export async function tickAuction(sessionId: string) {
   const session = await load(sessionId);
   if (session.status !== "LIVE") return decorate(session);
   if (session.phase === "INTRO" || session.phase === "SOLD" || session.phase === "UNSOLD") return decorate(session);
@@ -533,21 +533,13 @@ export async function tickAuction(sessionId: string, opts?: { forceAi?: boolean 
   const passed = JSON.parse(lot.passedTeamIds) as string[];
   const user = session.teams.find((t) => t.isUser)!;
   const userOut = passed.includes(user.franchiseId);
-  // After an AI bid the user decides; once the user leads (or has passed) the AI side keeps moving.
-  const waitingOnUser =
-    !userOut &&
-    !opts?.forceAi &&
-    session.phase === "BIDDING" &&
-    lot.currentBidderId != null &&
-    lot.currentBidderId !== user.franchiseId;
-  if (waitingOnUser) return decorate(session);
-
+  // The floor never waits for the user: rivals keep bidding (and the hammer keeps falling) whether or not the user acts.
   const aiTeams = shuffle(
     session.teams.filter((t) => !t.isUser && !passed.includes(t.franchiseId)),
     rng,
   );
   // Nobody has bid and every rival has stepped away: only the user can open the bidding.
-  if (!userOut && lot.currentBidderId == null && aiTeams.length === 0 && !opts?.forceAi) return decorate(session);
+  if (!userOut && lot.currentBidderId == null && aiTeams.length === 0) return decorate(session);
 
   let acted = false;
   let passedChanged = false;
@@ -656,6 +648,22 @@ async function markUnsold(session: FullSession, lot: FullSession["lots"][number]
   });
   await prisma.auctionSession.update({ where: { id: session.id }, data: { phase: "UNSOLD", hammerCount: 0 } });
   return getSession(session.id);
+}
+
+/** Skips the player on the block (no sale, no accelerated-round return) and moves to the next lot. */
+export async function skipPlayer(sessionId: string) {
+  const session = await load(sessionId);
+  if (session.status !== "LIVE") throw new Error("Auction already completed.");
+  if (session.phase === "SOLD" || session.phase === "UNSOLD") throw new Error("This player is already resolved.");
+  const lot = session.lots[session.currentLotIndex];
+  if (!lot || lot.status !== "LIVE") throw new Error("Player is no longer available.");
+  await prisma.auctionLot.update({
+    where: { id: lot.id },
+    data: { status: "SKIPPED", currentBid: 0, currentBidderId: null },
+  });
+  await addEvent(sessionId, "PLAYER_SKIPPED", `${lot.player.name} is skipped.`, { playerId: lot.playerId });
+  await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "UNSOLD", hammerCount: 0 } });
+  return nextPlayer(sessionId);
 }
 
 export async function nextPlayer(sessionId: string) {

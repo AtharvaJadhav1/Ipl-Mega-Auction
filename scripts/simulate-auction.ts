@@ -32,7 +32,7 @@ async function run() {
       } catch {
         // already passed
       }
-      s = (await tickAuction(id, { forceAi: true }))!;
+      s = (await tickAuction(id))!;
     }
     s = (await getSession(id))!;
     if (s.phase === "SOLD") sold += 1;

@@ -259,6 +259,13 @@ export function AuctionRoom({ id }: { id: string }) {
               <p className="self-center text-xs text-white/50">{d.userBidError}</p>
             )}
             <button
+              className="glass rounded-full px-6 py-3 text-sm"
+              disabled={d.status !== "LIVE" || d.phase === "SOLD" || d.phase === "UNSOLD" || game.busy}
+              onClick={() => game.skip()}
+            >
+              Skip player
+            </button>
+            <button
               className="glass rounded-full px-8 py-3 text-sm"
               disabled={d.status !== "LIVE" || passed.includes(user?.franchiseId ?? "") || lot?.currentBidderId === user?.franchiseId || d.phase === "INTRO" || d.phase === "SOLD" || d.phase === "UNSOLD"}
               onClick={() => game.pass()}

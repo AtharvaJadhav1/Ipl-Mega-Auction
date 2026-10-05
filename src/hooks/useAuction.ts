@@ -79,12 +79,9 @@ export function useAuction(id: string) {
     const lot = data.currentLot;
     const passed = data.passedTeamIds;
     const userOut = passed.includes(user.franchiseId);
-    // The room waits for the user after an AI bid, or when the user is the only bidder left to open the lot.
+    // Rivals keep bidding on their own; the room only pauses when the user alone could still open the lot.
     const aiLeft = data.teams.filter((t) => !t.isUser && !passed.includes(t.franchiseId)).length;
-    const waitingOnUser =
-      !userOut &&
-      data.phase === "BIDDING" &&
-      ((lot?.currentBidderId != null && lot.currentBidderId !== user.franchiseId) || (lot?.currentBidderId == null && aiLeft === 0));
+    const waitingOnUser = !userOut && lot?.currentBidderId == null && aiLeft === 0;
     if (waitingOnUser) return;
     const ms = failures.current > 0 ? RETRY_MS : (SPEED[data.speed] ?? 1000);
     const t = setTimeout(() => {
@@ -104,6 +101,7 @@ export function useAuction(id: string) {
     pass: () => run(`/api/auction/${id}/pass`),
     tick: () => run(`/api/auction/${id}/tick`),
     next: () => run(`/api/auction/${id}/next`),
+    skip: () => run(`/api/auction/${id}/skip`),
     begin: () => run(`/api/auction/${id}/begin`),
   };
 }
