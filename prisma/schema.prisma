@@ -1,0 +1,195 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Season {
+  id              String   @id
+  year            Int
+  name            String
+  salaryCap       Int
+  source          String
+  sourceUrl       String?
+  lastVerifiedAt  String
+  players         Player[]
+  sessions        AuctionSession[]
+}
+
+model Franchise {
+  id          String   @id
+  name        String
+  shortName   String
+  city        String
+  primary     String
+  secondary   String
+  accent      String
+  personality String
+  players     Player[]
+  sessionTeams SessionTeam[]
+}
+
+model Player {
+  id                 String   @id
+  seasonId           String
+  season             Season   @relation(fields: [seasonId], references: [id])
+  name               String
+  shortName          String
+  country            String
+  role               String
+  battingStyle       String?
+  bowlingStyle       String?
+  isOverseas         Boolean
+  capped             Boolean
+  age                Int?
+  basePrice          Int
+  megaBasePrice      Int
+  actual2026Price    Int?
+  actual2026TeamId   String?
+  actual2026Team     Franchise? @relation(fields: [actual2026TeamId], references: [id])
+  acquisition        String
+  setCode            String
+  battingMatches     Int?
+  battingInns        Int?
+  runs               Int?
+  battingAvg         Float?
+  strikeRate         Float?
+  fours              Int?
+  sixes              Int?
+  fifties            Int?
+  hundreds           Int?
+  bowlingMatches     Int?
+  overs              Float?
+  wickets            Int?
+  economy            Float?
+  bowlingAvg         Float?
+  bowlingSr          Float?
+  bestBowling        String?
+  statsSource        String
+  statsSourceUrl     String?
+  statsVerifiedAt    String?
+  dataNotes          String?
+  lots               AuctionLot[]
+  squadMembers       SessionSquadMember[]
+  bids               Bid[]
+  events             AuctionEvent[]
+
+  @@index([seasonId, name])
+  @@index([role])
+  @@index([setCode])
+}
+
+model AuctionSession {
+  id              String   @id
+  seasonId        String
+  season          Season   @relation(fields: [seasonId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  mode            String
+  difficulty      String
+  speed           String
+  userFranchiseId String
+  status          String
+  phase           String
+  currentLotIndex Int      @default(0)
+  hammerCount     Int      @default(0)
+  tickCount       Int      @default(0)
+  soundEnabled    Boolean  @default(true)
+  aiAggression    Int      @default(50)
+  seed            Int
+  challengeId     String?
+  customPurse     Int?
+  rulesJson       String
+  teams           SessionTeam[]
+  lots            AuctionLot[]
+  bids            Bid[]
+  events          AuctionEvent[]
+  playingXi       PlayingXiSlot[]
+}
+
+model SessionTeam {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       AuctionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  franchiseId   String
+  franchise     Franchise @relation(fields: [franchiseId], references: [id])
+  isUser        Boolean
+  purse         Int
+  initialPurse  Int
+  overseasCount Int      @default(0)
+  members       SessionSquadMember[]
+
+  @@unique([sessionId, franchiseId])
+}
+
+model SessionSquadMember {
+  id            String   @id @default(cuid())
+  sessionTeamId String
+  sessionTeam   SessionTeam @relation(fields: [sessionTeamId], references: [id], onDelete: Cascade)
+  playerId      String
+  player        Player   @relation(fields: [playerId], references: [id])
+  price         Int
+  source        String
+  acquiredAt    DateTime @default(now())
+
+  @@unique([sessionTeamId, playerId])
+}
+
+model AuctionLot {
+  id             String   @id @default(cuid())
+  sessionId      String
+  session        AuctionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  playerId       String
+  player         Player   @relation(fields: [playerId], references: [id])
+  orderIndex     Int
+  setCode        String
+  status         String
+  currentBid     Int      @default(0)
+  currentBidderId String?
+  soldPrice      Int?
+  soldTeamId     String?
+  passedTeamIds  String   @default("[]")
+  bids           Bid[]
+
+  @@index([sessionId, orderIndex])
+}
+
+model Bid {
+  id         String   @id @default(cuid())
+  sessionId  String
+  session    AuctionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  lotId      String
+  lot        AuctionLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  playerId   String
+  player     Player @relation(fields: [playerId], references: [id])
+  teamId     String
+  amount     Int
+  createdAt  DateTime @default(now())
+}
+
+model AuctionEvent {
+  id         String   @id @default(cuid())
+  sessionId  String
+  session    AuctionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  playerId   String?
+  player     Player? @relation(fields: [playerId], references: [id])
+  teamId     String?
+  type       String
+  amount     Int?
+  message    String
+  createdAt  DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+model PlayingXiSlot {
+  id         String   @id @default(cuid())
+  sessionId  String
+  session    AuctionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  slotKey    String
+  playerId   String?
+  orderIndex Int
+}
