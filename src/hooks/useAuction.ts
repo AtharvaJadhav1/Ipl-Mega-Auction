@@ -10,6 +10,8 @@ const SPEED: Record<string, number> = {
   instant: 70,
 };
 const RETRY_MS = 2500;
+// How long the SOLD / UNSOLD result stays on screen before the next player opens.
+const RESULT_MS: Record<string, number> = { slow: 4000, normal: 3000, fast: 2000, instant: 800 };
 
 export function useAuction(id: string) {
   const [data, setData] = useState<AuctionView | null>(null);
@@ -82,7 +84,14 @@ export function useAuction(id: string) {
       }, failures.current > 0 ? RETRY_MS : Math.max(600, SPEED[data.speed] ?? 1000));
       return () => clearTimeout(t);
     }
-    if (["SOLD", "UNSOLD", "COMPLETE", "RETENTION"].includes(data.phase)) return;
+    // Show the result for a few seconds, then move to the next player automatically.
+    if (data.phase === "SOLD" || data.phase === "UNSOLD") {
+      const t = setTimeout(() => {
+        void run(`/api/auction/${id}/next`, { silent: true });
+      }, failures.current > 0 ? RETRY_MS : (RESULT_MS[data.speed] ?? 3000));
+      return () => clearTimeout(t);
+    }
+    if (["COMPLETE", "RETENTION"].includes(data.phase)) return;
     // The user's Right to Match decision is theirs alone.
     if (data.phase === "RTM" && data.rtmPending?.isUser) return;
     const user = data.userTeam;

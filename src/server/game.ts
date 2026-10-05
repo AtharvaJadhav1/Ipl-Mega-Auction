@@ -1,7 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Prisma } from "@prisma/client";
 import { FRANCHISES } from "@/data/franchises";
 import { PLAYER_SEEDS, SETS, type PlayerSeed } from "@/data/players";
-import { baseValue, computeMaxBid, decideBid, mulberry32, roleNeed, type AiTeamView, type PlayerView } from "@/engine/ai";
+import { baseValue, computeMaxBid, decideBid, MAX_PLAYER_PRICE, mulberry32, roleNeed, type AiTeamView, type PlayerView } from "@/engine/ai";
 import { canAfford, nextBidAmount } from "@/engine/bids";
 import { commentaryFor } from "@/engine/commentary";
 import { gameRatings } from "@/engine/ratings";
@@ -404,7 +405,11 @@ export async function getSession(id: string) {
   return decorate(session);
 }
 
+/** While set, `decorate` returns an empty stub: internal loops (skip) don't need the heavy client payload per tick. */
+const quietMode = new AsyncLocalStorage<boolean>();
+
 export function decorate(session: FullSession) {
+  if (quietMode.getStore()) return {} as never;
   const rules = parseRules(session.rulesJson);
   const lot = session.lots[session.currentLotIndex] ?? null;
   const basePrice =
@@ -593,7 +598,7 @@ function aiMaxBid(session: FullSession, team: FullSession["teams"][number], lot:
     rivalLeader: !!leader && areRivals(team.franchiseId, leader),
   };
   const max = computeMaxBid(toAiTeam(team, session), toPlayerView(lot.player, lotBase(session, lot)), ctx, rules);
-  return Math.round(max * (0.85 + (session.aiAggression / 100) * 0.35));
+  return Math.min(MAX_PLAYER_PRICE, Math.round(max * (0.85 + (session.aiAggression / 100) * 0.35)));
 }
 
 function lotBase(session: FullSession, lot: FullSession["lots"][number]) {
@@ -954,8 +959,10 @@ export async function skipPlayer(sessionId: string) {
     const cur = await load(sessionId);
     if (cur.phase === "SOLD" || cur.phase === "UNSOLD") break;
     const curLot = cur.lots[cur.currentLotIndex];
-    if (cur.phase === "RTM" && curLot?.rtmTeamId === user.franchiseId) await userRtm(sessionId, "decline");
-    else await tickAuction(sessionId);
+    await quietMode.run(true, async () => {
+      if (cur.phase === "RTM" && curLot?.rtmTeamId === user.franchiseId) await userRtm(sessionId, "decline");
+      else await tickAuction(sessionId);
+    });
   }
   return getSession(sessionId);
 }

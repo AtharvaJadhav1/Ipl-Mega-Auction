@@ -62,7 +62,7 @@ describe("AI valuation", () => {
     setCode: "M1",
   };
 
-  function team(personality: AiTeamView["personality"], purse = 400_000_000): AiTeamView {
+  function team(personality: AiTeamView["personality"], purse = 1_250_000_000): AiTeamView {
     return {
       franchiseId: personality,
       personality,

@@ -74,6 +74,21 @@ const PERSONALITY_MULT: Record<Personality, number> = {
   balanced: 0.98,
 };
 
+/** Record-level ceiling for one player (the real IPL record is about ₹27 Cr). */
+export const MAX_PLAYER_PRICE = 275_000_000;
+const SOFT_CAP_START = 120_000_000;
+const SOFT_CAP_CEILING = 270_000_000;
+const SOFT_CAP_SCALE = 250_000_000;
+
+/**
+ * Valuations above ~₹12 Cr are squeezed smoothly toward ~₹27 Cr, so only genuine superstars approach the record
+ * while the ordering between teams (and between players) is preserved.
+ */
+export function softCap(value: number): number {
+  if (value <= SOFT_CAP_START) return value;
+  return SOFT_CAP_START + (SOFT_CAP_CEILING - SOFT_CAP_START) * (1 - Math.exp(-(value - SOFT_CAP_START) / SOFT_CAP_SCALE));
+}
+
 const BLUFF: Record<Personality, number> = {
   aggressive: 0.18,
   "star-focused": 0.1,
@@ -173,9 +188,13 @@ export function computeMaxBid(
     value *= 0.7;
   }
 
+  // No team puts more than ~28% of its purse on a single player.
+  value = Math.min(value, team.purse * 0.28);
+  value = softCap(value);
+
   const spread = DIFF_SPREAD[ctx.difficulty];
   const jitter = 1 - spread + ctx.rng() * spread * 2;
-  value *= jitter;
+  value = Math.min(value * jitter, MAX_PLAYER_PRICE);
 
   const maxAffordableCeiling = team.purse - Math.max(0, rules.minSquadSize - team.squadSize - 1) * rules.minPlayerPrice;
   if (player.isOverseas && rules.overseasMaxFee != null) value = Math.min(value, rules.overseasMaxFee);
@@ -204,6 +223,7 @@ export function decideBid(
   ) {
     return { decision: "PASS", amount: null };
   }
+  if (next > MAX_PLAYER_PRICE) return { decision: "PASS", amount: null };
   if (next > maxBid) {
     if (rng() < 0.06 && next <= maxBid * 1.08 && ratingBump(player)) {
       return { decision: "BID", amount: next };
@@ -218,11 +238,33 @@ export function decideBid(
   if (next > maxBid * 0.92 && rng() < 0.22) {
     return { decision: "WAIT", amount: null };
   }
+  // Far below its ceiling a team often jumps several steps at once, which keeps big lots from dragging on.
+  const limit = Math.min(maxBid * 0.9, MAX_PLAYER_PRICE, player.isOverseas && rules.overseasMaxFee != null ? rules.overseasMaxFee : Infinity);
+  if (currentBid > 0) {
+    const step = nextBidAmount(next, player.basePrice) - next;
+    const gap = limit - next;
+    if (gap > step * 3 && rng() < 0.7) {
+      // The further below its ceiling, the bigger the jump: lots converge in a couple of dozen bids rather than a hundred.
+      const steps = Math.min(8, 1 + Math.floor((gap / step) * (0.1 + rng() * 0.25)));
+      const amount = jump(next, steps, limit, player.basePrice);
+      if (amount > next && canAfford(team.purse, amount, team.squadSize, rules)) return { decision: "AGGRESSIVE", amount };
+    }
+  }
   if (next < maxBid * 0.7 && rng() < 0.28) {
     return { decision: "AGGRESSIVE", amount: next };
   }
   if (rng() < 0.12) return { decision: "WAIT", amount: null };
   return { decision: "BID", amount: next };
+}
+
+function jump(next: number, steps: number, limit: number, base: number) {
+  let amount = next;
+  for (let i = 1; i < steps; i++) {
+    const n = nextBidAmount(amount, base);
+    if (n > limit) break;
+    amount = n;
+  }
+  return amount;
 }
 
 function ratingBump(player: PlayerView) {

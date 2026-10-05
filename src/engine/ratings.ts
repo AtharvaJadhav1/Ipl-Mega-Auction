@@ -18,6 +18,7 @@ function clamp(n: number) {
 }
 
 export function gameRatings(player: {
+  id?: string;
   role: string;
   capped: boolean;
   isOverseas: boolean;
@@ -33,6 +34,22 @@ export function gameRatings(player: {
   age: number | null;
   bowlingStyle: string | null;
 }): GameRatings {
+  if (player.id === undefined) return computeRatings(player);
+  const key = `${player.id}|${player.runs}|${player.wickets}|${player.strikeRate}|${player.economy}|${player.actual2026Price}|${player.megaBasePrice}|${player.age}|${player.role}|${player.capped}|${player.sixes}|${player.battingAvg}|${player.bowlingAvg}|${player.bowlingStyle}`;
+  let hit = cache.get(key);
+  if (!hit) {
+    hit = computeRatings(player);
+    if (cache.size > 5000) cache.clear();
+    cache.set(key, hit);
+  }
+  return hit;
+}
+
+const cache = new Map<string, GameRatings>();
+
+type RatingInput = Parameters<typeof gameRatings>[0];
+
+function computeRatings(player: RatingInput): GameRatings {
   const batForm = player.runs != null ? Math.min(30, player.runs / 25) : player.capped ? 12 : 6;
   const sr = player.strikeRate != null ? Math.min(20, (player.strikeRate - 120) / 6) : 8;
   const avg = player.battingAvg != null ? Math.min(15, player.battingAvg / 4) : 7;

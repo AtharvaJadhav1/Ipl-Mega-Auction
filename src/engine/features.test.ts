@@ -92,7 +92,7 @@ describe("AI behaviour modifiers", () => {
   const team: AiTeamView = {
     franchiseId: "x",
     personality: "balanced",
-    purse: 800_000_000,
+    purse: 1_250_000_000,
     initialPurse: 1_250_000_000,
     squadSize: 10,
     overseasCount: 2,
