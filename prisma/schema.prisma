@@ -97,6 +97,8 @@ model AuctionSession {
   currentLotIndex Int      @default(0)
   hammerCount     Int      @default(0)
   tickCount       Int      @default(0)
+  paused          Boolean  @default(false)
+  name            String?
   soundEnabled    Boolean  @default(true)
   aiAggression    Int      @default(50)
   seed            Int
@@ -108,6 +110,7 @@ model AuctionSession {
   bids            Bid[]
   events          AuctionEvent[]
   playingXi       PlayingXiSlot[]
+  trades          Trade[]
 }
 
 model SessionTeam {
@@ -120,6 +123,9 @@ model SessionTeam {
   purse         Int
   initialPurse  Int
   overseasCount Int      @default(0)
+  rtmCards      Int      @default(0)
+  grudge        Float    @default(0)
+  lostPlayerIds String   @default("[]")
   members       SessionSquadMember[]
 
   @@unique([sessionId, franchiseId])
@@ -152,6 +158,7 @@ model AuctionLot {
   soldPrice      Int?
   soldTeamId     String?
   passedTeamIds  String   @default("[]")
+  rtmTeamId      String?
   bids           Bid[]
 
   @@index([sessionId, orderIndex])
@@ -192,4 +199,18 @@ model PlayingXiSlot {
   slotKey    String
   playerId   String?
   orderIndex Int
+}
+
+model Trade {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       AuctionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  partnerTeamId String
+  offeredIds    String
+  requestedIds  String
+  accepted      Boolean
+  message       String
+  createdAt     DateTime @default(now())
+
+  @@index([sessionId, createdAt])
 }

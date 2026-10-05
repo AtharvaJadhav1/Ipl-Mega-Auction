@@ -13,6 +13,7 @@ const schema = z.object({
   challengeId: z.string().optional(),
   customPurse: z.number().int().min(100_000_000).max(2_000_000_000).optional(),
   maxOverseas: z.number().int().min(2).max(8).optional(),
+  name: z.string().max(60).optional(),
 });
 
 export async function POST(req: Request) {

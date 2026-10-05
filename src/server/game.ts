@@ -1,11 +1,15 @@
 import { Prisma } from "@prisma/client";
 import { FRANCHISES } from "@/data/franchises";
 import { PLAYER_SEEDS, SETS, type PlayerSeed } from "@/data/players";
-import { computeMaxBid, decideBid, mulberry32, type AiTeamView, type PlayerView } from "@/engine/ai";
+import { baseValue, computeMaxBid, decideBid, mulberry32, roleNeed, type AiTeamView, type PlayerView } from "@/engine/ai";
 import { canAfford, nextBidAmount } from "@/engine/bids";
 import { commentaryFor } from "@/engine/commentary";
 import { gameRatings } from "@/engine/ratings";
 import { DEFAULT_RULES, parseRules, type AuctionRules } from "@/engine/rules";
+import { aiRetentionPicks, CAPPED_SLABS, MAX_CAPPED_RETAINED, MAX_RETAINED, MAX_UNCAPPED_RETAINED, planRetention, rtmCardsAfterRetention, UNCAPPED_SLAB } from "@/engine/retention";
+import { areRivals, franchiseGaps } from "@/engine/strategy";
+import { evaluateTrade } from "@/engine/trade";
+import { formatINR } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 
 export const CHALLENGES = [
@@ -104,7 +108,9 @@ function toPlayerView(p: PlayerSeed | FullSession["lots"][number]["player"], bas
   };
 }
 
-function toAiTeam(t: FullSession["teams"][number]): AiTeamView {
+function toAiTeam(t: FullSession["teams"][number], session?: FullSession): AiTeamView {
+  const lostIds = JSON.parse(t.lostPlayerIds || "[]") as string[];
+  const roleOf = new Map(session?.lots.map((l) => [l.playerId, l.player.role]) ?? []);
   return {
     franchiseId: t.franchiseId,
     personality: t.franchise.personality as AiTeamView["personality"],
@@ -114,6 +120,9 @@ function toAiTeam(t: FullSession["teams"][number]): AiTeamView {
     overseasCount: t.overseasCount,
     roleCounts: roleCounts(t.members),
     isUser: t.isUser,
+    gaps: franchiseGaps(t.franchiseId),
+    grudge: t.grudge,
+    lostRoles: lostIds.map((id) => roleOf.get(id)).filter((r): r is string => !!r),
   };
 }
 
@@ -200,6 +209,47 @@ function poolForMode(mode: string) {
   });
 }
 
+async function createLots(sessionId: string, mode: string, seed: number, exclude: Set<string>) {
+  const rng = mulberry32(seed);
+  const pool = poolForMode(mode).filter((p) => !exclude.has(p.id));
+  const orderedSets = [...SETS].sort((a, b) => a.order - b.order);
+  let index = 0;
+  const lotRows = [];
+  for (const set of orderedSets) {
+    const group = shuffle(
+      pool.filter((p) => p.setCode === set.code),
+      rng,
+    );
+    for (const p of group) {
+      lotRows.push({
+        sessionId,
+        playerId: p.id,
+        orderIndex: index++,
+        setCode: p.setCode,
+        status: "PENDING",
+        currentBid: 0,
+      });
+    }
+  }
+  if (lotRows.length) await prisma.auctionLot.createMany({ data: lotRows });
+
+  const first = await prisma.auctionLot.findFirst({
+    where: { sessionId },
+    orderBy: { orderIndex: "asc" },
+    include: { player: true },
+  });
+  if (first) {
+    await prisma.auctionLot.update({ where: { id: first.id }, data: { status: "LIVE" } });
+    await addEvent(sessionId, "SET_STARTED", `Set ${SETS.find((s) => s.code === first.setCode)?.name ?? first.setCode} opens.`);
+    await addEvent(
+      sessionId,
+      "PLAYER_STARTED",
+      commentaryFor({ type: "PLAYER_STARTED", playerName: first.player.name, amount: mode === "mini" ? first.player.basePrice : first.player.megaBasePrice }),
+      { playerId: first.playerId },
+    );
+  }
+}
+
 export async function startAuction(input: {
   userFranchiseId: string;
   mode: string;
@@ -210,13 +260,14 @@ export async function startAuction(input: {
   challengeId?: string;
   customPurse?: number;
   maxOverseas?: number;
+  name?: string;
 }) {
   const seasonId = await ensureCatalog();
   const seed = Math.floor(Math.random() * 1_000_000_000);
-  const rng = mulberry32(seed);
   const challenge = CHALLENGES.find((c) => c.id === input.challengeId);
   const custom = input.mode === "custom";
   const mini = input.mode === "mini";
+  const mega = input.mode === "mega";
   const rules: AuctionRules = {
     ...DEFAULT_RULES,
     maxOverseasPlayers:
@@ -225,6 +276,8 @@ export async function startAuction(input: {
     // The overseas fee cap only applies in the real 2026 mini-auction.
     overseasMaxFee: mini ? DEFAULT_RULES.overseasMaxFee : null,
   };
+  const userFranchise = FRANCHISES.find((f) => f.id === input.userFranchiseId);
+  const defaultName = `${userFranchise?.shortName ?? input.userFranchiseId.toUpperCase()} · ${input.mode} · ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
 
   const sessionId = crypto.randomUUID();
   try {
@@ -232,12 +285,14 @@ export async function startAuction(input: {
       data: {
         id: sessionId,
         seasonId,
+        name: input.name?.trim() || defaultName,
         mode: input.mode,
         difficulty: input.difficulty,
         speed: input.speed,
         userFranchiseId: input.userFranchiseId,
         status: "LIVE",
-        phase: "INTRO",
+        // Mega auctions open with the retention window; other modes go straight to the first lot.
+        phase: mega ? "RETENTION" : "INTRO",
         seed,
         soundEnabled: input.soundEnabled,
         aiAggression: input.aiAggression,
@@ -261,6 +316,8 @@ export async function startAuction(input: {
           purse,
           initialPurse: purse,
           overseasCount: retained.filter((p) => p.isOverseas).length,
+          // Mini auctions grant one Right to Match card; mega cards are set when retention is confirmed.
+          rtmCards: mini ? 1 : 0,
           members: {
             create: retained.map((p) => ({ playerId: p.id, price: 0, source: p.acquisition })),
           },
@@ -268,48 +325,73 @@ export async function startAuction(input: {
       });
     }
 
-    const pool = poolForMode(input.mode);
-    const orderedSets = [...SETS].sort((a, b) => a.order - b.order);
-    let index = 0;
-    const lotRows = [];
-    for (const set of orderedSets) {
-      const group = shuffle(
-        pool.filter((p) => p.setCode === set.code),
-        rng,
-      );
-      for (const p of group) {
-        lotRows.push({
-          sessionId,
-          playerId: p.id,
-          orderIndex: index++,
-          setCode: p.setCode,
-          status: "PENDING",
-          currentBid: 0,
-        });
-      }
-    }
-    if (lotRows.length) await prisma.auctionLot.createMany({ data: lotRows });
-
-    const first = await prisma.auctionLot.findFirst({
-      where: { sessionId },
-      orderBy: { orderIndex: "asc" },
-      include: { player: true },
-    });
-    if (first) {
-      await prisma.auctionLot.update({ where: { id: first.id }, data: { status: "LIVE" } });
-      await addEvent(sessionId, "SET_STARTED", `Set ${SETS.find((s) => s.code === first.setCode)?.name ?? first.setCode} opens.`);
-      await addEvent(
-        sessionId,
-        "PLAYER_STARTED",
-        commentaryFor({ type: "PLAYER_STARTED", playerName: first.player.name, amount: mini ? first.player.basePrice : first.player.megaBasePrice }),
-        { playerId: first.playerId },
-      );
-    }
+    if (!mega) await createLots(sessionId, input.mode, seed, new Set());
   } catch (e) {
     await prisma.auctionSession.deleteMany({ where: { id: sessionId } });
     throw e;
   }
 
+  return getSession(sessionId);
+}
+
+/** Mega-auction retention: the user's picks plus automatic AI retentions, then the player pool is built. */
+export async function confirmRetention(sessionId: string, pickIds: string[]) {
+  const session = await load(sessionId);
+  if (session.status !== "LIVE" || session.phase !== "RETENTION") throw new Error("The retention window is not open.");
+  const rules = parseRules(session.rulesJson);
+  const user = session.teams.find((t) => t.isUser)!;
+  const byId = new Map(PLAYER_SEEDS.map((p) => [p.id, p]));
+
+  const userPicks: PlayerSeed[] = [];
+  for (const id of pickIds) {
+    const p = byId.get(id);
+    if (!p || p.actual2026TeamId !== user.franchiseId) throw new Error("You can only retain players from your own 2026 squad.");
+    userPicks.push(p);
+  }
+  const userPlan = planRetention(userPicks, { maxOverseas: rules.maxOverseasPlayers });
+  if (userPlan.error) throw new Error(userPlan.error);
+  const reserve = Math.max(0, rules.minSquadSize - userPicks.length) * rules.minPlayerPrice;
+  if (userPlan.total + reserve > user.purse) throw new Error("Those retentions leave too little purse for a minimum squad.");
+
+  const plans = [{ team: user, picks: userPicks, costs: userPlan.costs }];
+  for (const t of session.teams.filter((x) => !x.isUser)) {
+    const ranked = PLAYER_SEEDS.filter((p) => p.actual2026TeamId === t.franchiseId).sort(
+      (a, b) => gameRatings(b).overall - gameRatings(a).overall,
+    );
+    const picks = aiRetentionPicks(ranked, t.franchise.personality, { maxOverseas: rules.maxOverseasPlayers, purse: t.purse });
+    plans.push({ team: t, picks, costs: planRetention(picks, { maxOverseas: rules.maxOverseasPlayers }).costs });
+  }
+
+  await prisma.$transaction(
+    plans.flatMap(({ team, picks, costs }) => [
+      prisma.sessionSquadMember.createMany({
+        data: picks.map((p, i) => ({ sessionTeamId: team.id, playerId: p.id, price: costs[i], source: "retained" })),
+      }),
+      prisma.sessionTeam.update({
+        where: { id: team.id },
+        data: {
+          purse: team.purse - costs.reduce((a, b) => a + b, 0),
+          overseasCount: picks.filter((p) => p.isOverseas).length,
+          rtmCards: rtmCardsAfterRetention(picks.length),
+        },
+      }),
+    ]),
+  );
+
+  for (const { team, picks } of plans) {
+    await addEvent(
+      sessionId,
+      "RETENTION",
+      picks.length
+        ? `${team.franchise.shortName} retain ${picks.map((p) => p.shortName).join(", ")}.`
+        : `${team.franchise.shortName} retain no one and go in with ${rtmCardsAfterRetention(0)} RTM cards.`,
+      { teamId: team.franchiseId },
+    );
+  }
+
+  const retainedIds = new Set(plans.flatMap((p) => p.picks.map((x) => x.id)));
+  await createLots(sessionId, session.mode, session.seed, retainedIds);
+  await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "INTRO", currentLotIndex: 0, hammerCount: 0 } });
   return getSession(sessionId);
 }
 
@@ -358,10 +440,58 @@ export function decorate(session: FullSession) {
         ? "You have passed on this player."
         : validatePurchase(user, lot.player, nextBid, rules);
 
+  const rtmTeam = session.phase === "RTM" && lot?.rtmTeamId ? session.teams.find((t) => t.franchiseId === lot.rtmTeamId) : null;
+  const rtmPending = rtmTeam && lot
+    ? {
+        teamId: rtmTeam.franchiseId,
+        shortName: rtmTeam.franchise.shortName,
+        price: lot.currentBid,
+        winnerId: lot.currentBidderId,
+        isUser: rtmTeam.isUser,
+        canMatch: rtmTeam.isUser ? !validatePurchase(rtmTeam, lot.player, lot.currentBid, rules) : false,
+      }
+    : null;
+  // Which franchise could still use RTM on the player on the block (shown as a hint to the user).
+  const rtmHint =
+    lot && lot.setCode !== "ACCEL" && lot.player.actual2026TeamId
+      ? (() => {
+          const t = session.teams.find((x) => x.franchiseId === lot.player.actual2026TeamId);
+          return t && t.rtmCards > 0 ? { teamId: t.franchiseId, shortName: t.franchise.shortName, cards: t.rtmCards } : null;
+        })()
+      : null;
+
+  const retention =
+    session.phase === "RETENTION"
+      ? {
+          candidates: PLAYER_SEEDS.filter((p) => p.actual2026TeamId === user.franchiseId)
+            .map((p) => ({
+              id: p.id,
+              name: p.name,
+              role: p.role,
+              capped: p.capped,
+              isOverseas: p.isOverseas,
+              age: p.age,
+              overall: gameRatings(p).overall,
+              price2026: p.actual2026Price,
+            }))
+            .sort((a, b) => b.overall - a.overall),
+          slabs: {
+            capped: CAPPED_SLABS,
+            uncapped: UNCAPPED_SLAB,
+            max: MAX_RETAINED,
+            maxCapped: MAX_CAPPED_RETAINED,
+            maxUncapped: MAX_UNCAPPED_RETAINED,
+          },
+        }
+      : null;
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { seed: _seed, ...publicSession } = session;
   return {
     ...publicSession,
+    rtmPending,
+    rtmHint,
+    retention,
     userBidError,
     challenge: challengeStatus(session.challengeId, user.members, rules),
     lots: session.lots.map((l) => ({
@@ -415,6 +545,30 @@ function squadNeeds(roles: string[], overseas: number, rules: AuctionRules) {
   return { counts: c, overseas, items };
 }
 
+const moneyRatioCache = new WeakMap<FullSession, number | undefined>();
+
+/** Purse still in the room versus what the players the room still needs are likely to cost. */
+function roomMoneyRatio(session: FullSession, rules: AuctionRules): number | undefined {
+  if (moneyRatioCache.has(session)) return moneyRatioCache.get(session);
+  const pending = session.lots.filter((l) => l.status === "PENDING" || l.status === "LIVE");
+  const need = session.teams.reduce((sum, t) => sum + Math.max(0, rules.minSquadSize - t.members.length), 0);
+  const n = Math.min(pending.length, Math.ceil(need * 1.1));
+  let ratio: number | undefined;
+  if (n > 0) {
+    const demand = pending
+      .map((l) => baseValue(toPlayerView(l.player, lotBase(session, l))))
+      .sort((a, b) => b - a)
+      .slice(0, n)
+      .reduce((a, b) => a + b, 0);
+    const roomPurse = session.teams.filter((t) => t.members.length < rules.maxSquadSize).reduce((a, t) => a + t.purse, 0);
+    ratio = roomPurse / Math.max(1, demand * MARKET_DEMAND_SCALE);
+  }
+  moneyRatioCache.set(session, ratio);
+  return ratio;
+}
+
+const MARKET_DEMAND_SCALE = 0.55;
+
 function marketCtx(session: FullSession, lot: FullSession["lots"][number], rules: AuctionRules, rng: () => number) {
   const pending = session.lots.filter((l) => l.status === "PENDING" || l.status === "LIVE");
   return {
@@ -425,12 +579,20 @@ function marketCtx(session: FullSession, lot: FullSession["lots"][number], rules
     difficulty: session.difficulty as "easy" | "medium" | "hard" | "expert",
     rng,
     batterBias: session.challengeId === "bowling-attack" ? 1.18 : undefined,
+    roomMoneyRatio: roomMoneyRatio(session, rules),
   };
 }
 
-/** The AI's real ceiling for a lot, including the user-chosen aggression. Used by both ticks and the intel panel. */
+/** The AI's real ceiling for a lot, including aggression, rivalry, memory and market effects. Used by ticks and the intel panel. */
 function aiMaxBid(session: FullSession, team: FullSession["teams"][number], lot: FullSession["lots"][number], rules: AuctionRules, rng: () => number) {
-  const max = computeMaxBid(toAiTeam(team), toPlayerView(lot.player, lotBase(session, lot)), marketCtx(session, lot, rules, rng), rules);
+  const leader = lot.currentBidderId;
+  const user = session.teams.find((t) => t.isUser);
+  const ctx = {
+    ...marketCtx(session, lot, rules, rng),
+    leaderIsUser: !!leader && leader === user?.franchiseId,
+    rivalLeader: !!leader && areRivals(team.franchiseId, leader),
+  };
+  const max = computeMaxBid(toAiTeam(team, session), toPlayerView(lot.player, lotBase(session, lot)), ctx, rules);
   return Math.round(max * (0.85 + (session.aiAggression / 100) * 0.35));
 }
 
@@ -443,6 +605,7 @@ export async function startBidding(sessionId: string) {
   if (session.status !== "LIVE" || session.phase !== "INTRO") {
     return decorate(session);
   }
+  if (session.paused) throw new Error("The auction is paused.");
   await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "BIDDING", hammerCount: 0 } });
   return getSession(sessionId);
 }
@@ -450,6 +613,7 @@ export async function startBidding(sessionId: string) {
 export async function placeUserBid(sessionId: string, kind: "increment" | "pass") {
   const session = await load(sessionId);
   if (session.status !== "LIVE") throw new Error("Auction already completed.");
+  if (session.paused) throw new Error("The auction is paused.");
   if (session.phase !== "BIDDING" && session.phase !== "HAMMER") throw new Error("Bidding is not open for this player.");
   const lot = session.lots[session.currentLotIndex];
   if (!lot || lot.status !== "LIVE") throw new Error("Player is no longer available.");
@@ -500,6 +664,7 @@ function validatePurchase(
 
 async function applyBid(session: FullSession, lot: FullSession["lots"][number], teamId: string, amount: number) {
   const team = session.teams.find((t) => t.franchiseId === teamId)!;
+  const previous = lot.currentBidderId;
   await prisma.bid.create({
     data: { sessionId: session.id, lotId: lot.id, playerId: lot.playerId, teamId, amount },
   });
@@ -512,6 +677,31 @@ async function applyBid(session: FullSession, lot: FullSession["lots"][number], 
     teamId,
     amount,
   });
+
+  // Rivals with memory: being outbid by the user builds resentment.
+  if (team.isUser && previous && previous !== teamId) {
+    const victim = session.teams.find((t) => t.franchiseId === previous);
+    if (victim && !victim.isUser) {
+      const grudge = Math.min(6, victim.grudge + 1);
+      await prisma.sessionTeam.update({ where: { id: victim.id }, data: { grudge } });
+      if (grudge === 3) {
+        await addEvent(session.id, "GRUDGE", `${victim.franchise.shortName} are tired of being outbid by you and will push harder.`, { teamId: victim.franchiseId });
+      }
+    }
+  }
+
+  // Paddle war: two teams trading blows.
+  const recent = await prisma.bid.findMany({ where: { lotId: lot.id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 4 });
+  if (recent.length === 4) {
+    const [a, b, c, d] = recent.map((r) => r.teamId);
+    if (a !== b && a === c && b === d) {
+      const already = await prisma.auctionEvent.count({ where: { sessionId: session.id, type: "PADDLE_WAR", playerId: lot.playerId } });
+      if (!already) {
+        const nameOf = (id: string) => session.teams.find((t) => t.franchiseId === id)?.franchise.shortName ?? id;
+        await addEvent(session.id, "PADDLE_WAR", `Paddle war! ${nameOf(a)} and ${nameOf(b)} refuse to back down.`, { playerId: lot.playerId });
+      }
+    }
+  }
 }
 
 async function load(id: string) {
@@ -522,13 +712,14 @@ async function load(id: string) {
 
 export async function tickAuction(sessionId: string) {
   const session = await load(sessionId);
-  if (session.status !== "LIVE") return decorate(session);
-  if (session.phase === "INTRO" || session.phase === "SOLD" || session.phase === "UNSOLD") return decorate(session);
+  if (session.status !== "LIVE" || session.paused) return decorate(session);
+  if (session.phase === "INTRO" || session.phase === "SOLD" || session.phase === "UNSOLD" || session.phase === "RETENTION") return decorate(session);
   const lot = session.lots[session.currentLotIndex];
   if (!lot || lot.status !== "LIVE") return decorate(session);
 
   const rules = parseRules(session.rulesJson);
   await prisma.auctionSession.update({ where: { id: sessionId }, data: { tickCount: { increment: 1 } } });
+  if (session.phase === "RTM") return aiRtmTick(session, lot, rules);
   const rng = mulberry32(session.seed + session.currentLotIndex * 997 + session.tickCount * 7919 + lot.currentBid);
   const passed = JSON.parse(lot.passedTeamIds) as string[];
   const user = session.teams.find((t) => t.isUser)!;
@@ -545,10 +736,12 @@ export async function tickAuction(sessionId: string) {
   let passedChanged = false;
   for (const t of aiTeams) {
     if (lot.currentBidderId === t.franchiseId) continue;
-    const view = toAiTeam(t);
+    const view = toAiTeam(t, session);
     const player = toPlayerView(lot.player, lotBase(session, lot));
     const max = aiMaxBid(session, t, lot, rules, rng);
-    const decision = decideBid(view, player, lot.currentBid, lot.currentBidderId, max, rules, rng);
+    const decision = decideBid(view, player, lot.currentBid, lot.currentBidderId, max, rules, rng, {
+      leaderIsUser: lot.currentBidderId === user.franchiseId,
+    });
     if (decision.decision === "PASS") {
       passed.push(t.franchiseId);
       passedChanged = true;
@@ -609,11 +802,75 @@ export async function tickAuction(sessionId: string) {
     await addEvent(sessionId, "GOING_TWICE", "Going twice...", { playerId: liveLot.playerId });
     return getSession(sessionId);
   }
-  return markSold(refreshed, liveLot);
+  return concludeSale(refreshed, liveLot, rules);
 }
 
-async function markSold(session: FullSession, lot: FullSession["lots"][number]) {
-  const teamId = lot.currentBidderId!;
+function rtmCandidate(session: FullSession, lot: FullSession["lots"][number], rules: AuctionRules) {
+  const previousId = lot.player.actual2026TeamId;
+  if (!previousId || lot.setCode === "ACCEL" || lot.rtmTeamId || previousId === lot.currentBidderId) return null;
+  const team = session.teams.find((t) => t.franchiseId === previousId);
+  if (!team || team.rtmCards <= 0) return null;
+  if (validatePurchase(team, lot.player, lot.currentBid, rules)) return null;
+  return team;
+}
+
+async function concludeSale(session: FullSession, lot: FullSession["lots"][number], rules: AuctionRules) {
+  const rtm = rtmCandidate(session, lot, rules);
+  if (!rtm) return markSold(session, lot);
+  await prisma.auctionLot.update({ where: { id: lot.id }, data: { rtmTeamId: rtm.franchiseId } });
+  await prisma.auctionSession.update({ where: { id: session.id }, data: { phase: "RTM", hammerCount: 0 } });
+  await addEvent(
+    session.id,
+    "RTM_AVAILABLE",
+    `${rtm.franchise.shortName} hold the Right to Match on ${lot.player.name} at ${formatINR(lot.currentBid)}.`,
+    { playerId: lot.playerId, teamId: rtm.franchiseId, amount: lot.currentBid },
+  );
+  return getSession(session.id);
+}
+
+async function aiRtmTick(session: FullSession, lot: FullSession["lots"][number], rules: AuctionRules) {
+  const team = session.teams.find((t) => t.franchiseId === lot.rtmTeamId);
+  if (!team) return markSold(session, lot);
+  if (team.isUser) return decorate(session);
+  const rng = mulberry32(session.seed + session.currentLotIndex * 31 + session.tickCount);
+  const max = aiMaxBid(session, team, lot, rules, rng);
+  return finishRtm(session, lot, team, lot.currentBid <= max && !validatePurchase(team, lot.player, lot.currentBid, rules));
+}
+
+async function finishRtm(session: FullSession, lot: FullSession["lots"][number], team: FullSession["teams"][number], match: boolean) {
+  if (match) {
+    await addEvent(
+      session.id,
+      "RTM_MATCHED",
+      `RTM! ${team.franchise.shortName} match ${formatINR(lot.currentBid)} and keep ${lot.player.name}.`,
+      { playerId: lot.playerId, teamId: team.franchiseId, amount: lot.currentBid },
+    );
+    return markSold(session, lot, { buyerId: team.franchiseId, viaRtm: true });
+  }
+  await addEvent(session.id, "RTM_DECLINED", `${team.franchise.shortName} decline to match for ${lot.player.name}.`, {
+    playerId: lot.playerId,
+    teamId: team.franchiseId,
+  });
+  return markSold(session, lot);
+}
+
+export async function userRtm(sessionId: string, action: "match" | "decline") {
+  const session = await load(sessionId);
+  if (session.status !== "LIVE") throw new Error("Auction already completed.");
+  if (session.paused) throw new Error("The auction is paused.");
+  if (session.phase !== "RTM") throw new Error("No Right to Match decision is pending.");
+  const lot = session.lots[session.currentLotIndex];
+  const user = session.teams.find((t) => t.isUser)!;
+  if (!lot || lot.rtmTeamId !== user.franchiseId) throw new Error("The Right to Match belongs to another franchise.");
+  if (action === "match") {
+    const err = validatePurchase(user, lot.player, lot.currentBid, parseRules(session.rulesJson));
+    if (err) throw new Error(err);
+  }
+  return finishRtm(session, lot, user, action === "match");
+}
+
+async function markSold(session: FullSession, lot: FullSession["lots"][number], opts?: { buyerId?: string; viaRtm?: boolean }) {
+  const teamId = opts?.buyerId ?? lot.currentBidderId!;
   const team = session.teams.find((t) => t.franchiseId === teamId)!;
   const price = lot.currentBid;
   await prisma.$transaction([
@@ -622,21 +879,40 @@ async function markSold(session: FullSession, lot: FullSession["lots"][number]) 
       data: { status: "SOLD", soldPrice: price, soldTeamId: teamId },
     }),
     prisma.sessionSquadMember.create({
-      data: { sessionTeamId: team.id, playerId: lot.playerId, price, source: "auction" },
+      data: { sessionTeamId: team.id, playerId: lot.playerId, price, source: opts?.viaRtm ? "rtm" : "auction" },
     }),
     prisma.sessionTeam.update({
       where: { id: team.id },
       data: {
         purse: team.purse - price,
         overseasCount: team.overseasCount + (lot.player.isOverseas ? 1 : 0),
+        rtmCards: opts?.viaRtm ? team.rtmCards - 1 : team.rtmCards,
       },
     }),
   ]);
-  await addEvent(session.id, "PLAYER_SOLD", commentaryFor({ type: "PLAYER_SOLD", playerName: lot.player.name, teamName: team.franchise.shortName, amount: price }), {
+  const sold = commentaryFor({ type: "PLAYER_SOLD", playerName: lot.player.name, teamName: team.franchise.shortName, amount: price });
+  await addEvent(session.id, "PLAYER_SOLD", opts?.viaRtm ? `${sold} (via RTM)` : sold, {
     playerId: lot.playerId,
     teamId,
     amount: price,
   });
+
+  // Rivals with memory: the runner-up resents losing the player to the user and goes after that role again.
+  if (team.isUser && !opts?.viaRtm) {
+    const bids = await prisma.bid.findMany({ where: { lotId: lot.id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+    const runnerUpId = bids.find((b) => b.teamId !== teamId)?.teamId;
+    const runnerUp = session.teams.find((t) => t.franchiseId === runnerUpId);
+    if (runnerUp && !runnerUp.isUser) {
+      const lost = JSON.parse(runnerUp.lostPlayerIds || "[]") as string[];
+      lost.push(lot.playerId);
+      await prisma.sessionTeam.update({
+        where: { id: runnerUp.id },
+        data: { lostPlayerIds: JSON.stringify(lost), grudge: Math.min(6, runnerUp.grudge + 1) },
+      });
+      await addEvent(session.id, "REVENGE", `${runnerUp.franchise.shortName} lose ${lot.player.name} to you and want revenge.`, { teamId: runnerUp.franchiseId });
+    }
+  }
+
   await prisma.auctionSession.update({ where: { id: session.id }, data: { phase: "SOLD", hammerCount: 0 } });
   return getSession(session.id);
 }
@@ -654,6 +930,9 @@ async function markUnsold(session: FullSession, lot: FullSession["lots"][number]
 export async function skipPlayer(sessionId: string) {
   const session = await load(sessionId);
   if (session.status !== "LIVE") throw new Error("Auction already completed.");
+  if (session.paused) throw new Error("The auction is paused.");
+  if (session.phase === "RETENTION") throw new Error("Finish the retention window first.");
+  if (session.phase === "RTM") throw new Error("A Right to Match decision is pending.");
   if (session.phase === "SOLD" || session.phase === "UNSOLD") throw new Error("This player is already resolved.");
   const lot = session.lots[session.currentLotIndex];
   if (!lot || lot.status !== "LIVE") throw new Error("Player is no longer available.");
@@ -914,4 +1193,120 @@ function parseCsv(text: string): string[][] {
 
 export async function latestSession() {
   return prisma.auctionSession.findFirst({ orderBy: { updatedAt: "desc" } });
+}
+
+export async function updateSettings(sessionId: string, patch: { speed?: string; paused?: boolean }) {
+  await load(sessionId);
+  await prisma.auctionSession.update({
+    where: { id: sessionId },
+    data: { ...(patch.speed ? { speed: patch.speed } : {}), ...(patch.paused != null ? { paused: patch.paused } : {}) },
+  });
+  return getSession(sessionId);
+}
+
+export async function renameSession(sessionId: string, name: string) {
+  await load(sessionId);
+  await prisma.auctionSession.update({ where: { id: sessionId }, data: { name: name.trim().slice(0, 60) || null } });
+  return getSession(sessionId);
+}
+
+export async function deleteSession(sessionId: string) {
+  await prisma.auctionSession.deleteMany({ where: { id: sessionId } });
+}
+
+export async function listSessions() {
+  const sessions = await prisma.auctionSession.findMany({
+    orderBy: { updatedAt: "desc" },
+    include: { teams: { where: { isUser: true }, include: { franchise: true, _count: { select: { members: true } } } } },
+  });
+  const counts = await prisma.auctionLot.groupBy({ by: ["sessionId", "status"], _count: { _all: true } });
+  return sessions.map((s) => {
+    const mine = counts.filter((c) => c.sessionId === s.id);
+    const total = mine.filter((c) => c.status !== "RETURNED").reduce((a, c) => a + c._count._all, 0);
+    const done = mine.filter((c) => ["SOLD", "UNSOLD", "SKIPPED"].includes(c.status)).reduce((a, c) => a + c._count._all, 0);
+    const user = s.teams[0];
+    return {
+      id: s.id,
+      name: s.name,
+      mode: s.mode,
+      difficulty: s.difficulty,
+      status: s.status,
+      phase: s.phase,
+      challengeId: s.challengeId,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      franchise: user ? { id: user.franchiseId, shortName: user.franchise.shortName, primary: user.franchise.primary, secondary: user.franchise.secondary } : null,
+      squadSize: user?._count.members ?? 0,
+      purse: user?.purse ?? 0,
+      lotsDone: done,
+      lotsTotal: total,
+    };
+  });
+}
+
+export async function listTrades(sessionId: string) {
+  return prisma.trade.findMany({ where: { sessionId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+}
+
+/** Post-auction swap with an AI franchise. Contracts move with the players, so purses settle on the price difference. */
+export async function proposeTrade(sessionId: string, partnerFranchiseId: string, offerIds: string[], requestIds: string[]) {
+  const session = await load(sessionId);
+  if (session.status !== "COMPLETE") throw new Error("The trading window opens once the auction is complete.");
+  const rules = parseRules(session.rulesJson);
+  const user = session.teams.find((t) => t.isUser)!;
+  const partner = session.teams.find((t) => t.franchiseId === partnerFranchiseId && !t.isUser);
+  if (!partner) throw new Error("Unknown trade partner.");
+  if (!offerIds.length || !requestIds.length) throw new Error("Pick at least one player on each side.");
+  if (offerIds.length > 5 || requestIds.length > 5) throw new Error("A trade can include at most 5 players per side.");
+  if (new Set(offerIds).size !== offerIds.length || new Set(requestIds).size !== requestIds.length) throw new Error("A player was selected twice.");
+  const offered = offerIds.map((id) => user.members.find((m) => m.playerId === id));
+  const requested = requestIds.map((id) => partner.members.find((m) => m.playerId === id));
+  if (offered.some((m) => !m)) throw new Error("You can only offer players from your own squad.");
+  if (requested.some((m) => !m)) throw new Error("You can only request players from their squad.");
+  const give = offered as NonNullable<(typeof offered)[number]>[];
+  const get = requested as NonNullable<(typeof requested)[number]>[];
+
+  const userSize = user.members.length - give.length + get.length;
+  const partnerSize = partner.members.length - get.length + give.length;
+  if (userSize > rules.maxSquadSize) throw new Error("That deal would put your squad over the size limit.");
+  if (partnerSize > rules.maxSquadSize) throw new Error(`${partner.franchise.shortName} cannot take on that many players.`);
+  const overseas = (list: { player: { isOverseas: boolean } }[]) => list.filter((m) => m.player.isOverseas).length;
+  const userOverseas = user.overseasCount - overseas(give) + overseas(get);
+  const partnerOverseas = partner.overseasCount - overseas(get) + overseas(give);
+  if (userOverseas > rules.maxOverseasPlayers) throw new Error("That deal would breach your overseas limit.");
+  if (partnerOverseas > rules.maxOverseasPlayers) throw new Error(`${partner.franchise.shortName} would breach their overseas limit.`);
+  const priceOut = give.reduce((a, m) => a + m.price, 0);
+  const priceIn = get.reduce((a, m) => a + m.price, 0);
+  if (user.purse + priceOut - priceIn < 0) throw new Error("You cannot absorb that much salary.");
+  if (partner.purse + priceIn - priceOut < 0) throw new Error(`${partner.franchise.shortName} cannot absorb that much salary.`);
+
+  const view = toAiTeam(partner, session);
+  const lite = (m: (typeof give)[number]) => ({ overall: gameRatings(m.player).overall, capped: m.player.capped, role: m.player.role, age: m.player.age });
+  const verdict = evaluateTrade({
+    give: give.map(lite),
+    get: get.map(lite),
+    personality: view.personality,
+    needFor: (role) => roleNeed(view, role),
+  });
+
+  if (verdict.accepted) {
+    await prisma.$transaction([
+      prisma.sessionSquadMember.updateMany({ where: { id: { in: give.map((m) => m.id) } }, data: { sessionTeamId: partner.id, source: "trade" } }),
+      prisma.sessionSquadMember.updateMany({ where: { id: { in: get.map((m) => m.id) } }, data: { sessionTeamId: user.id, source: "trade" } }),
+      prisma.sessionTeam.update({ where: { id: user.id }, data: { purse: user.purse + priceOut - priceIn, overseasCount: userOverseas } }),
+      prisma.sessionTeam.update({ where: { id: partner.id }, data: { purse: partner.purse + priceIn - priceOut, overseasCount: partnerOverseas } }),
+      prisma.playingXiSlot.deleteMany({ where: { sessionId, playerId: { in: give.map((m) => m.playerId) } } }),
+    ]);
+  }
+  await prisma.trade.create({
+    data: {
+      sessionId,
+      partnerTeamId: partnerFranchiseId,
+      offeredIds: JSON.stringify(offerIds),
+      requestedIds: JSON.stringify(requestIds),
+      accepted: verdict.accepted,
+      message: verdict.message,
+    },
+  });
+  return { accepted: verdict.accepted, message: verdict.message, ratio: verdict.ratio, session: await getSession(sessionId) };
 }

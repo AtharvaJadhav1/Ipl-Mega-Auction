@@ -167,6 +167,17 @@ export const FRANCHISES: FranchiseSeed[] = [
   },
 ];
 
+/** Classic fixtures where bidding tends to turn into paddle wars. */
+export const RIVALRIES: [string, string][] = [
+  ["csk", "mi"],
+  ["csk", "rcb"],
+  ["mi", "rcb"],
+  ["kkr", "srh"],
+  ["dc", "pbks"],
+  ["gt", "lsg"],
+  ["rr", "srh"],
+];
+
 export const DATA_PROVENANCE = {
   season: "IPL 2026",
   lastVerifiedAt: "2026-09-13",
