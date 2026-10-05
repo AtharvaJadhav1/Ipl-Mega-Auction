@@ -96,3 +96,64 @@ button:disabled {
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: #2a3148; border-radius: 8px; }
+
+/* ---------- Light theme ---------- */
+:root[data-theme="light"] {
+  --bg: #f4f1e8;
+  --panel: rgba(255, 255, 255, 0.82);
+  --line: rgba(120, 90, 20, 0.28);
+  --gold: #8a6508;
+  --ice: #141a2c;
+  --danger: #c01f45;
+}
+:root[data-theme="light"],
+:root[data-theme="light"] body {
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(232, 201, 120, 0.25), transparent 55%),
+    var(--bg);
+}
+:root[data-theme="light"] .field {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(120, 90, 20, 0.3);
+}
+:root[data-theme="light"] [class*="text-white"] { color: rgba(20, 26, 44, 0.72); }
+:root[data-theme="light"] [class*="border-white"] { border-color: rgba(20, 26, 44, 0.12); }
+:root[data-theme="light"] [class*="bg-white/"] { background-color: rgba(20, 26, 44, 0.1); }
+:root[data-theme="light"] [class*="bg-black/"] { background-color: rgba(255, 255, 255, 0.55); }
+:root[data-theme="light"] [class*="bg-[#07080d]"] { background-color: rgba(244, 241, 232, 0.92); }
+:root[data-theme="light"] .bg-white { background-color: #141a2c; color: #fff; }
+:root[data-theme="light"] .bg-white.text-black { color: #fff; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #b7b09a; }
+:root[data-theme="light"] .text-black { color: #111; }
+
+/* ---------- Reduced motion (user toggle or OS setting) ---------- */
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ---------- Keyboard focus ---------- */
+:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 0 0.35em;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 0.75em;
+  line-height: 1.5;
+  text-align: center;
+  opacity: 0.7;
+}

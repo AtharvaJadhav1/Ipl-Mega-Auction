@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Crest, Money } from "@/components/Brand";
+import { RetentionPanel } from "@/components/RetentionPanel";
 import { useAuction } from "@/hooks/useAuction";
 import { sfx } from "@/lib/sfx";
 import { formatINR } from "@/lib/money";
@@ -17,6 +18,8 @@ export function AuctionRoom({ id }: { id: string }) {
   const lastEvent = d?.events?.[0];
   const lastEventId = lastEvent?.id;
   const lastEventType = lastEvent?.type;
+  const lastEventAmount = lastEvent?.amount ?? 0;
+  const lastEventMessage = lastEvent?.message ?? "";
 
   // Play a sound once per new event (not on every refresh of the same data).
   useEffect(() => {
@@ -27,22 +30,64 @@ export function AuctionRoom({ id }: { id: string }) {
     }
     if (lastSoundEvent.current === lastEventId) return;
     lastSoundEvent.current = lastEventId;
+    // Spoken commentary is its own preference; it highlights the moments that matter rather than every bid.
+    const spoken = ["PLAYER_STARTED", "GOING_ONCE", "GOING_TWICE", "PLAYER_SOLD", "PLAYER_UNSOLD", "RTM_AVAILABLE", "RTM_MATCHED", "RTM_DECLINED", "PADDLE_WAR", "REVENGE", "GRUDGE"];
+    if (spoken.includes(lastEventType) || (lastEventType === "BID" && lastEventAmount >= 50_000_000)) sfx.speak(lastEventMessage);
     if (!sound) return;
-    if (lastEventType === "BID") sfx.bid();
-    if (lastEventType === "PLAYER_SOLD") sfx.sold();
+    if (lastEventType === "BID") sfx.bid(lastEventAmount);
+    if (lastEventType === "PLAYER_SOLD") sfx.sold(lastEventAmount);
     if (lastEventType === "PLAYER_UNSOLD") sfx.unsold();
     if (lastEventType === "PLAYER_STARTED") sfx.intro();
     if (lastEventType === "GOING_ONCE" || lastEventType === "GOING_TWICE") sfx.hammer();
-  }, [lastEventId, lastEventType, sound]);
+    if (lastEventType.startsWith("RTM")) sfx.rtm();
+    if (lastEventType === "PADDLE_WAR") sfx.paddleWar();
+  }, [lastEventId, lastEventType, lastEventAmount, lastEventMessage, sound]);
 
   const shake = lastEvent?.type === "BID" && (lastEvent.amount ?? 0) >= 100_000_000;
   const user = d?.userTeam;
   const lot = d?.currentLot;
   const player = lot?.player;
   const passed: string[] = d?.passedTeamIds ?? [];
-  const canBid = d?.status === "LIVE" && (d.phase === "BIDDING" || d.phase === "HAMMER") && !d.userBidError;
+  const canBid = d?.status === "LIVE" && !d.paused && (d.phase === "BIDDING" || d.phase === "HAMMER") && !d.userBidError;
   const recentBids = (d?.bids ?? []).filter((b) => b.lotId === lot?.id).slice(0, 12);
   const leader = d?.teams.find((t) => t.franchiseId === lot?.currentBidderId);
+
+  const inBidding = d?.status === "LIVE" && !d?.paused && (d.phase === "BIDDING" || d.phase === "HAMMER");
+  const resolved = d?.status === "LIVE" && (d.phase === "SOLD" || d.phase === "UNSOLD");
+  const canSkip = d?.status === "LIVE" && !d.paused && (d.phase === "INTRO" || d.phase === "BIDDING" || d.phase === "HAMMER");
+  const canPass =
+    inBidding && !passed.includes(user?.franchiseId ?? "") && lot?.currentBidderId !== user?.franchiseId;
+
+  // Keyboard shortcuts: B bid, P pass, S skip, Enter start/next, Space pause, M/D match or decline an RTM.
+  const handlers = useRef({ game, d, canBid, canSkip, canPass, resolved });
+  useEffect(() => {
+    handlers.current = { game, d, canBid, canSkip, canPass, resolved };
+  });
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      const h = handlers.current;
+      if (!h.d || h.game.busy) return;
+      const key = e.key.toLowerCase();
+      if (key === "b" && h.canBid) void h.game.bid();
+      else if (key === "p" && h.canPass) void h.game.pass();
+      else if (key === "s" && h.canSkip) void h.game.skip();
+      else if (key === "m" && h.d.rtmPending?.isUser && h.d.rtmPending.canMatch && !h.d.paused) void h.game.rtm("match");
+      else if (key === "d" && h.d.rtmPending?.isUser && !h.d.paused) void h.game.rtm("decline");
+      else if (key === " " && h.d.status === "LIVE" && h.d.phase !== "RETENTION") {
+        e.preventDefault();
+        void h.game.setPaused(!h.d.paused);
+      } else if (key === "enter" && h.d.status === "LIVE" && !h.d.paused) {
+        if (h.d.phase === "INTRO") void h.game.begin();
+        else if (h.resolved) void h.game.next();
+      } else return;
+      if (key !== " ") e.preventDefault();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   if (!d) {
     return <div className="p-10 text-sm text-white/60">{game.error || "Loading auction room..."}</div>;
@@ -54,7 +99,7 @@ export function AuctionRoom({ id }: { id: string }) {
         <div>
           <p className="text-[11px] uppercase tracking-[0.28em] gold">IPL Mega Auction</p>
           <h1 className="display text-2xl">
-            Set {d.setName} · Player {d.currentLotIndex + 1} / {d.lots.length}
+            {d.phase === "RETENTION" ? "Retention window" : `Set ${d.setName} · Player ${d.currentLotIndex + 1} / ${d.lots.length}`}
           </h1>
         </div>
         <div className="flex flex-wrap justify-center gap-2 text-xs">
@@ -65,6 +110,8 @@ export function AuctionRoom({ id }: { id: string }) {
           <NavChip href={`/xi/${id}`} label="XI" />
           <NavChip href={`/summary/${id}`} label="Summary" />
           <NavChip href={`/replay/${id}`} label="Replay" />
+          <NavChip href={`/trade/${id}`} label="Trade" />
+          <NavChip href="/history" label="Saved" />
         </div>
         <div className="flex items-center justify-end gap-4 text-right">
           <div>
@@ -73,6 +120,12 @@ export function AuctionRoom({ id }: { id: string }) {
               <Money value={user?.purse ?? 0} />
             </p>
           </div>
+          {user && (d.mode === "mega" || d.mode === "mini") && (
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-white/45">RTM</p>
+              <p className="display text-2xl">{user.rtmCards}</p>
+            </div>
+          )}
           <div>
             <p className="text-[10px] uppercase tracking-widest text-white/45">Squad</p>
             <p className="display text-2xl">
@@ -88,10 +141,43 @@ export function AuctionRoom({ id }: { id: string }) {
           >
             Sound {sound ? "On" : "Off"}
           </button>
+          {d.status === "LIVE" && d.phase !== "RETENTION" && (
+            <>
+              <button
+                className="glass rounded-full px-3 py-1 text-[11px] uppercase tracking-widest"
+                aria-pressed={d.paused}
+                onClick={() => void game.setPaused(!d.paused)}
+              >
+                {d.paused ? "Resume" : "Pause"} <kbd>Space</kbd>
+              </button>
+              <label className="sr-only" htmlFor="speed">
+                Auction speed
+              </label>
+              <select
+                id="speed"
+                className="glass rounded-full bg-transparent px-2 py-1 text-[11px] uppercase tracking-widest"
+                value={d.speed}
+                onChange={(e) => void game.setSpeed(e.target.value)}
+              >
+                <option value="slow">Slow</option>
+                <option value="normal">Normal</option>
+                <option value="fast">Fast</option>
+                <option value="instant">Instant</option>
+              </select>
+            </>
+          )}
         </div>
       </header>
 
-      <div className="ticker-wrap overflow-hidden border-b border-[var(--line)] bg-black/30 py-2 text-[11px] uppercase tracking-[0.18em]">
+      <div className="sr-only" role="status" aria-live="polite">
+        {lastEvent?.message}
+      </div>
+      {d.paused && (
+        <p role="alert" className="border-b border-[var(--line)] bg-black/40 py-2 text-center text-sm uppercase tracking-[0.3em] gold">
+          Auction paused — press Space or Resume to continue
+        </p>
+      )}
+      <div aria-hidden="true" className="ticker-wrap overflow-hidden border-b border-[var(--line)] bg-black/30 py-2 text-[11px] uppercase tracking-[0.18em]">
         <div className="ticker flex gap-10 whitespace-nowrap px-4 text-white/70">
           {(d.events ?? []).slice(0, 12).map((e) => (
             <span key={e.id}>
@@ -133,8 +219,9 @@ export function AuctionRoom({ id }: { id: string }) {
           </div>
         </aside>
 
-        <section className="glass relative overflow-hidden rounded-2xl p-5">
-          {player && (
+        <section className={`glass relative overflow-hidden rounded-2xl p-5 ${d.phase === "RETENTION" ? "xl:col-span-3" : ""}`}>
+          {d.phase === "RETENTION" && <RetentionPanel data={d} busy={game.busy} onConfirm={(ids) => void game.retain(ids)} />}
+          {d.phase !== "RETENTION" && player && (
             <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
               <div className="flex flex-col items-center text-center">
                 <div
@@ -173,16 +260,48 @@ export function AuctionRoom({ id }: { id: string }) {
                   <Stat label="2026 wickets" value={player.wickets ?? "Unknown"} />
                   <Stat label="Game rating" value={d.ratings ? `${d.ratings.overall}` : "—"} />
                 </div>
+                {d.rtmHint && d.phase !== "SOLD" && d.phase !== "UNSOLD" && (
+                  <p className="mt-3 text-xs gold">
+                    {d.rtmHint.shortName} hold {d.rtmHint.cards} RTM card{d.rtmHint.cards === 1 ? "" : "s"} and can match the winning bid for their former player.
+                  </p>
+                )}
                 <p className="mt-3 text-[11px] text-white/40">{player.dataNotes} · {player.statsSource}</p>
               </div>
+            </div>
+          )}
+
+          {d.phase === "RTM" && d.rtmPending && (
+            <div role="alertdialog" aria-label="Right to Match" className="mt-8 rounded-xl border border-[var(--gold)]/50 bg-black/30 p-6 text-center">
+              <p className="text-[11px] uppercase tracking-[0.3em] gold">Right to Match</p>
+              <p className="display mt-2 text-4xl">
+                {d.rtmPending.isUser ? "Match the winning bid?" : `${d.rtmPending.shortName} are deciding…`}
+              </p>
+              <p className="mt-2 text-white/70">
+                {player?.name} · {formatINR(d.rtmPending.price)} ({d.teams.find((t) => t.franchiseId === d.rtmPending?.winnerId)?.franchise.shortName ?? "?"} won the bid)
+              </p>
+              {d.rtmPending.isUser && (
+                <div className="mt-5 flex flex-wrap justify-center gap-3">
+                  <button
+                    className="rounded-full bg-[var(--gold)] px-8 py-3 text-sm font-semibold text-black"
+                    disabled={game.busy || d.paused || !d.rtmPending.canMatch}
+                    onClick={() => void game.rtm("match")}
+                  >
+                    Use RTM at {formatINR(d.rtmPending.price)} <kbd>M</kbd>
+                  </button>
+                  <button className="glass rounded-full px-8 py-3 text-sm" disabled={game.busy || d.paused} onClick={() => void game.rtm("decline")}>
+                    Decline <kbd>D</kbd>
+                  </button>
+                  {!d.rtmPending.canMatch && <p className="w-full text-xs text-white/50">You cannot afford to match (purse or squad limits).</p>}
+                </div>
+              )}
             </div>
           )}
 
           {d.phase === "INTRO" && (
             <div className="mt-8 flex flex-col items-center gap-3">
               <p className="display text-3xl gold">The bidding is about to start</p>
-              <button className="rounded-full bg-[var(--gold)] px-8 py-3 text-sm font-semibold text-black" onClick={() => game.begin()}>
-                Start bidding
+              <button className="rounded-full bg-[var(--gold)] px-8 py-3 text-sm font-semibold text-black" onClick={() => game.begin()} disabled={game.busy || d.paused}>
+                Start bidding <kbd>Enter</kbd>
               </button>
             </div>
           )}
@@ -222,7 +341,7 @@ export function AuctionRoom({ id }: { id: string }) {
                     {t.franchise.shortName} {t.isUser ? "· YOU" : ""}
                   </p>
                   <p className="text-[11px] text-white/50">
-                    <Money value={t.purse} /> · {t.members.length} ply · OS {t.overseasCount}/{d.rules.maxOverseasPlayers}
+                    <Money value={t.purse} /> · {t.members.length} ply · OS {t.overseasCount}/{d.rules.maxOverseasPlayers}{t.rtmCards > 0 ? ` · RTM ${t.rtmCards}` : ""}
                   </p>
                   <p className="text-[10px] uppercase tracking-widest text-white/35">
                     {out ? "Passed" : active ? "Bidding" : intel?.likely ? "In hunt" : "Watching"}
@@ -235,6 +354,7 @@ export function AuctionRoom({ id }: { id: string }) {
         </aside>
       </div>
 
+      {d.phase !== "RETENTION" && (
       <footer className="sticky bottom-0 border-t border-[var(--line)] bg-[#07080d]/90 px-4 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-5xl flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex gap-6">
@@ -244,8 +364,8 @@ export function AuctionRoom({ id }: { id: string }) {
           </div>
           <div className="flex flex-wrap gap-2">
             {(d.phase === "SOLD" || d.phase === "UNSOLD") && d.status === "LIVE" && (
-              <button className="rounded-full bg-white px-6 py-3 text-sm font-semibold text-black" onClick={() => game.next()}>
-                Next player
+              <button className="rounded-full bg-white px-6 py-3 text-sm font-semibold text-black" onClick={() => game.next()} disabled={game.busy || d.paused}>
+                Next player <kbd>Enter</kbd>
               </button>
             )}
             <button
@@ -253,28 +373,29 @@ export function AuctionRoom({ id }: { id: string }) {
               disabled={!canBid || game.busy}
               onClick={() => game.bid()}
             >
-              Bid {formatINR(d.nextBid)}
+              Bid {formatINR(d.nextBid)} <kbd>B</kbd>
             </button>
             {d.userBidError && d.status === "LIVE" && (d.phase === "BIDDING" || d.phase === "HAMMER") && (
               <p className="self-center text-xs text-white/50">{d.userBidError}</p>
             )}
             <button
               className="glass rounded-full px-6 py-3 text-sm"
-              disabled={d.status !== "LIVE" || d.phase === "SOLD" || d.phase === "UNSOLD" || game.busy}
+              disabled={!canSkip || game.busy}
               onClick={() => game.skip()}
             >
-              Skip player
+              Skip player <kbd>S</kbd>
             </button>
             <button
               className="glass rounded-full px-8 py-3 text-sm"
-              disabled={d.status !== "LIVE" || passed.includes(user?.franchiseId ?? "") || lot?.currentBidderId === user?.franchiseId || d.phase === "INTRO" || d.phase === "SOLD" || d.phase === "UNSOLD"}
+              disabled={!canPass || game.busy}
               onClick={() => game.pass()}
             >
-              Pass
+              Pass <kbd>P</kbd>
             </button>
           </div>
         </div>
       </footer>
+      )}
     </div>
   );
 }

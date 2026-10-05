@@ -6,8 +6,8 @@ import { Crest } from "@/components/Brand";
 import { formatINR } from "@/lib/money";
 
 const MODES = [
-  { id: "mega", title: "Mega auction", body: "Empty squads, ₹125 Cr cap. Full 2026 player identities. Game simulation — 2026 was a mini-auction in real life." },
-  { id: "mini", title: "2026 mini auction", body: "Real purses, retentions and the Dec 2025 auction pool." },
+  { id: "mega", title: "Mega auction", body: "Retain up to 6 players on real slab prices, then bid with the rest as Right to Match cards. ₹125 Cr cap. Game simulation — 2026 was a mini-auction in real life." },
+  { id: "mini", title: "2026 mini auction", body: "Real purses, retentions and the Dec 2025 auction pool. Each franchise holds one Right to Match card (a game variant)." },
   { id: "quick", title: "Quick auction", body: "Marquee sets and high-impact names only." },
   { id: "custom", title: "Custom", body: "Tune purse, overseas cap, AI aggression and speed." },
 ];
@@ -36,6 +36,9 @@ export default function HomePage() {
           <div className="mt-8 flex flex-wrap gap-3">
             <Link href="/setup" className="rounded-full bg-[var(--gold)] px-6 py-3 text-sm font-semibold text-black">
               Start game
+            </Link>
+            <Link href="/history" className="glass rounded-full px-6 py-3 text-sm">
+              Saved auctions
             </Link>
             {meta?.latestId && (
               <Link href={`/auction/${meta.latestId}`} className="glass rounded-full px-6 py-3 text-sm">

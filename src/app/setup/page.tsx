@@ -20,6 +20,7 @@ function SetupInner() {
   const [challengeId, setChallengeId] = useState("");
   const [customPurseCr, setCustomPurseCr] = useState(125);
   const [maxOverseas, setMaxOverseas] = useState(8);
+  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +49,7 @@ function SetupInner() {
         speed,
         soundEnabled,
         aiAggression,
+        name: name.trim() || undefined,
         challengeId: challengeId || undefined,
         customPurse: mode === "custom" ? customPurseCr * 10_000_000 : undefined,
         maxOverseas: mode === "custom" ? maxOverseas : undefined,
@@ -121,6 +123,9 @@ function SetupInner() {
         </Field>
         <Field label={`AI aggression ${aiAggression}`}>
           <input type="range" min={0} max={100} value={aiAggression} onChange={(e) => setAiAggression(Number(e.target.value))} />
+        </Field>
+        <Field label="Save slot name (optional)">
+          <input className="field" maxLength={60} placeholder="e.g. Hard mode RCB run" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Sound">
           <button className="glass rounded-full px-4 py-2 text-sm" onClick={() => setSoundEnabled((s) => !s)}>
