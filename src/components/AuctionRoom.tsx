@@ -52,16 +52,13 @@ export function AuctionRoom({ id }: { id: string }) {
   const recentBids = (d?.bids ?? []).filter((b) => b.lotId === lot?.id).slice(0, 12);
   const leader = d?.teams.find((t) => t.franchiseId === lot?.currentBidderId);
 
-  const inBidding = d?.status === "LIVE" && !d?.paused && (d.phase === "BIDDING" || d.phase === "HAMMER");
   const resolved = d?.status === "LIVE" && (d.phase === "SOLD" || d.phase === "UNSOLD");
   const canSkip = d?.status === "LIVE" && !d.paused && (d.phase === "INTRO" || d.phase === "BIDDING" || d.phase === "HAMMER");
-  const canPass =
-    inBidding && !passed.includes(user?.franchiseId ?? "") && lot?.currentBidderId !== user?.franchiseId;
 
-  // Keyboard shortcuts: B bid, P pass, S skip, Enter start/next, Space pause, M/D match or decline an RTM.
-  const handlers = useRef({ game, d, canBid, canSkip, canPass, resolved });
+  // Keyboard shortcuts: B bid, S skip, Enter start/next, Space pause, M/D match or decline an RTM.
+  const handlers = useRef({ game, d, canBid, canSkip, resolved });
   useEffect(() => {
-    handlers.current = { game, d, canBid, canSkip, canPass, resolved };
+    handlers.current = { game, d, canBid, canSkip, resolved };
   });
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -72,7 +69,6 @@ export function AuctionRoom({ id }: { id: string }) {
       if (!h.d || h.game.busy) return;
       const key = e.key.toLowerCase();
       if (key === "b" && h.canBid) void h.game.bid();
-      else if (key === "p" && h.canPass) void h.game.pass();
       else if (key === "s" && h.canSkip) void h.game.skip();
       else if (key === "m" && h.d.rtmPending?.isUser && h.d.rtmPending.canMatch && !h.d.paused) void h.game.rtm("match");
       else if (key === "d" && h.d.rtmPending?.isUser && !h.d.paused) void h.game.rtm("decline");
@@ -298,12 +294,9 @@ export function AuctionRoom({ id }: { id: string }) {
           )}
 
           {d.phase === "INTRO" && (
-            <div className="mt-8 flex flex-col items-center gap-3">
-              <p className="display text-3xl gold">The bidding is about to start</p>
-              <button className="rounded-full bg-[var(--gold)] px-8 py-3 text-sm font-semibold text-black" onClick={() => game.begin()} disabled={game.busy || d.paused}>
-                Start bidding <kbd>Enter</kbd>
-              </button>
-            </div>
+            <p role="status" className="display mt-8 text-center text-3xl gold">
+              {d.paused ? "Paused" : "Bidding opens in a moment…"}
+            </p>
           )}
 
           {(d.phase === "SOLD" || d.phase === "UNSOLD") && (
@@ -383,14 +376,7 @@ export function AuctionRoom({ id }: { id: string }) {
               disabled={!canSkip || game.busy}
               onClick={() => game.skip()}
             >
-              Skip player <kbd>S</kbd>
-            </button>
-            <button
-              className="glass rounded-full px-8 py-3 text-sm"
-              disabled={!canPass || game.busy}
-              onClick={() => game.pass()}
-            >
-              Pass <kbd>P</kbd>
+              Skip player — see result <kbd>S</kbd>
             </button>
           </div>
         </div>

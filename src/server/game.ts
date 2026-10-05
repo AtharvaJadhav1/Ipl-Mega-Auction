@@ -926,23 +926,38 @@ async function markUnsold(session: FullSession, lot: FullSession["lots"][number]
   return getSession(session.id);
 }
 
-/** Skips the player on the block (no sale, no accelerated-round return) and moves to the next lot. */
+/**
+ * Skips the player on the block: the user steps out and the room plays the lot to its conclusion at once,
+ * so the result (price and buyer, or unsold) can be shown instead of the lot silently disappearing.
+ */
 export async function skipPlayer(sessionId: string) {
   const session = await load(sessionId);
   if (session.status !== "LIVE") throw new Error("Auction already completed.");
   if (session.paused) throw new Error("The auction is paused.");
   if (session.phase === "RETENTION") throw new Error("Finish the retention window first.");
-  if (session.phase === "RTM") throw new Error("A Right to Match decision is pending.");
   if (session.phase === "SOLD" || session.phase === "UNSOLD") throw new Error("This player is already resolved.");
   const lot = session.lots[session.currentLotIndex];
   if (!lot || lot.status !== "LIVE") throw new Error("Player is no longer available.");
-  await prisma.auctionLot.update({
-    where: { id: lot.id },
-    data: { status: "SKIPPED", currentBid: 0, currentBidderId: null },
-  });
-  await addEvent(sessionId, "PLAYER_SKIPPED", `${lot.player.name} is skipped.`, { playerId: lot.playerId });
-  await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "UNSOLD", hammerCount: 0 } });
-  return nextPlayer(sessionId);
+  const user = session.teams.find((t) => t.isUser)!;
+
+  const passed = JSON.parse(lot.passedTeamIds) as string[];
+  if (lot.currentBidderId !== user.franchiseId && !passed.includes(user.franchiseId)) {
+    passed.push(user.franchiseId);
+    await prisma.auctionLot.update({ where: { id: lot.id }, data: { passedTeamIds: JSON.stringify(passed) } });
+  }
+  await addEvent(sessionId, "PLAYER_SKIPPED", `You skip ${lot.player.name}; the room decides.`, { playerId: lot.playerId, teamId: user.franchiseId });
+  if (session.phase === "INTRO") {
+    await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "BIDDING", hammerCount: 0 } });
+  }
+
+  for (let i = 0; i < 600; i++) {
+    const cur = await load(sessionId);
+    if (cur.phase === "SOLD" || cur.phase === "UNSOLD") break;
+    const curLot = cur.lots[cur.currentLotIndex];
+    if (cur.phase === "RTM" && curLot?.rtmTeamId === user.franchiseId) await userRtm(sessionId, "decline");
+    else await tickAuction(sessionId);
+  }
+  return getSession(sessionId);
 }
 
 export async function nextPlayer(sessionId: string) {

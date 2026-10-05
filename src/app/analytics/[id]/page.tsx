@@ -23,7 +23,7 @@ export default function AnalyticsPage({ params }: { params: Promise<{ id: string
     const highest = [...sold].sort((a, b) => (b.soldPrice ?? 0) - (a.soldPrice ?? 0))[0];
     const userBuys = data.userTeam.members.filter((m) => m.price > 0);
     const whatIfs = userBuys.slice(0, 3).map((m) =>
-      whatIfStoppedAt(m.player.name, m.price, Math.max(m.player.megaBasePrice, Math.round(m.price * 0.7)), m.player.actual2026Price),
+      ({ key: m.playerId, ...whatIfStoppedAt(m.player.name, m.price, Math.max(m.player.megaBasePrice, Math.round(m.price * 0.7)), m.player.actual2026Price) }),
     );
     const roleSpend: Record<string, number> = {};
     let overseasSpend = 0;
@@ -77,7 +77,7 @@ export default function AnalyticsPage({ params }: { params: Promise<{ id: string
       <div className="mt-8">
         <p className="text-[11px] uppercase tracking-widest text-white/40">What if?</p>
         {stats.whatIfs.map((w) => (
-          <div key={w.title} className="glass mt-2 rounded-xl p-4">
+          <div key={w.key} className="glass mt-2 rounded-xl p-4">
             <p className="font-semibold">{w.title}</p>
             <p className="mt-1 text-sm text-white/60">{w.detail}</p>
           </div>

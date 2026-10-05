@@ -141,7 +141,7 @@ export function whatIfStoppedAt(playerName: string, paid: number, stopAt: number
         : `The 2026 sold price was lower than you paid, so a tighter cap would have been closer to history.`
       : `No 2026 auction price exists for this player (retained/trade/unknown).`;
   return {
-    title: `What if you had stopped bidding at this lower cap?`,
+    title: `What if you had stopped bidding on ${playerName} sooner?`,
     detail: `On ${playerName}, you would have saved the difference of ${saved} rupees in-game. ${vsMarket}`,
   };
 }
