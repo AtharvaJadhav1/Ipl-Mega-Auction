@@ -223,7 +223,7 @@ export function AuctionRoom({ id }: { id: string }) {
                 <div
                   className="grid h-52 w-44 place-items-center rounded-xl border border-[var(--line)]"
                   style={{
-                    background: `linear-gradient(180deg, ${leader?.franchise.primary ?? "#888888"}33, #0b0d14)`,
+                    background: `linear-gradient(180deg, ${leader?.franchise.primary ?? "#b9a7ff"}55, #ffffff99)`,
                   }}
                 >
                   <div>
@@ -437,7 +437,7 @@ function SoldBanner({ session }: { session: AuctionView }) {
           className="confetti-dot absolute top-2 h-2 w-2 rounded-full"
           style={{
             left: `${(i * 6) % 100}%`,
-            background: i % 2 ? "#e8c978" : "#fff",
+            background: ["#ffb3c7", "#b8e6d4", "#c4b5fd", "#ffd9a8", "#a8d8ff"][i % 5],
             animationDelay: `${i * 40}ms`,
           }}
         />

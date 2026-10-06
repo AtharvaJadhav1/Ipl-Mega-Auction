@@ -12,7 +12,7 @@ export function PrefsPanel() {
       {open && (
         <div role="dialog" aria-label="Display and accessibility settings" className="glass mb-2 w-64 space-y-3 rounded-2xl p-4">
           <p className="text-[11px] uppercase tracking-[0.2em] text-white/45">Display &amp; access</p>
-          <Toggle label="Light theme" checked={prefs.theme === "light"} onChange={(v) => setPrefs({ theme: v ? "light" : "dark" })} />
+          <Toggle label="Dark mode" checked={prefs.theme === "dark"} onChange={(v) => setPrefs({ theme: v ? "dark" : "light" })} />
           <Toggle label="Reduce motion" checked={prefs.reducedMotion} onChange={(v) => setPrefs({ reducedMotion: v })} />
           <Toggle label="Colour-blind-safe teams" checked={prefs.colorBlind} onChange={(v) => setPrefs({ colorBlind: v })} />
           <Toggle

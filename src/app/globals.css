@@ -1,12 +1,35 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Pastel theme (default). Dark mode is an opt-in override below.
+   ============================================================ */
 :root {
+  --bg: #f8f6ff;
+  --panel: rgba(255, 255, 255, 0.74);
+  --line: rgba(150, 128, 214, 0.28);
+  --gold: #6a4fd0;          /* accent text: deep lavender, readable on pastel */
+  --accent-fill: #c9bbff;   /* pastel button fill */
+  --accent-fill-hover: #bba9ff;
+  --mint: #bdeedb;
+  --peach: #ffd9c7;
+  --sky: #cfe6ff;
+  --rose: #ffcfe0;
+  --lemon: #fff3bf;
+  --ice: #2c2a4a;
+  --danger: #e0557a;
+  --shadow: 0 10px 30px rgba(130, 110, 200, 0.14);
+}
+
+:root[data-theme="dark"] {
   --bg: #07080d;
   --panel: rgba(16, 18, 28, 0.78);
   --line: rgba(232, 201, 120, 0.18);
   --gold: #e8c978;
+  --accent-fill: #e8c978;
+  --accent-fill-hover: #f0d58c;
   --ice: #d7e4ff;
   --danger: #ff4d6d;
+  --shadow: none;
 }
 
 * { box-sizing: border-box; }
@@ -14,10 +37,20 @@
 html, body {
   min-height: 100%;
   background:
+    radial-gradient(900px 520px at 8% -8%, rgba(255, 217, 199, 0.75), transparent 60%),
+    radial-gradient(800px 520px at 96% 4%, rgba(207, 230, 255, 0.85), transparent 60%),
+    radial-gradient(900px 560px at 70% 108%, rgba(189, 238, 219, 0.75), transparent 60%),
+    radial-gradient(700px 500px at 0% 100%, rgba(255, 207, 224, 0.6), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+  color: var(--ice);
+}
+:root[data-theme="dark"] html,
+:root[data-theme="dark"] body {
+  background:
     radial-gradient(1200px 600px at 50% -10%, rgba(232, 201, 120, 0.08), transparent 55%),
     radial-gradient(900px 500px at 100% 100%, rgba(40, 70, 140, 0.18), transparent 50%),
     var(--bg);
-  color: var(--ice);
 }
 
 body {
@@ -33,6 +66,15 @@ h1, h2, h3, .display {
   background: var(--panel);
   border: 1px solid var(--line);
   backdrop-filter: blur(16px);
+  box-shadow: var(--shadow);
+}
+button.glass, a.glass {
+  transition: background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+:root:not([data-theme="dark"]) button.glass:hover:not(:disabled),
+:root:not([data-theme="dark"]) a.glass:hover {
+  background: rgba(255, 255, 255, 0.96);
+  transform: translateY(-1px);
 }
 
 .gold {
@@ -44,7 +86,7 @@ h1, h2, h3, .display {
 }
 .paddle.active {
   transform: translateY(-3px);
-  box-shadow: 0 0 0 1px var(--gold), 0 12px 40px rgba(232, 201, 120, 0.18);
+  box-shadow: 0 0 0 2px var(--accent-fill), 0 12px 32px rgba(150, 128, 214, 0.28);
 }
 
 .shake {
@@ -82,11 +124,14 @@ h1, h2, h3, .display {
 
 .field {
   width: 100%;
-  background: rgba(8, 10, 16, 0.8);
-  border: 1px solid rgba(232, 201, 120, 0.18);
-  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 14px;
   padding: 10px 12px;
   color: inherit;
+}
+:root[data-theme="dark"] .field {
+  background: rgba(8, 10, 16, 0.8);
 }
 
 button:disabled {
@@ -95,36 +140,45 @@ button:disabled {
 }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #2a3148; border-radius: 8px; }
+::-webkit-scrollbar-thumb { background: #cbc2ef; border-radius: 8px; }
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #2a3148; }
 
-/* ---------- Light theme ---------- */
-:root[data-theme="light"] {
-  --bg: #f4f1e8;
-  --panel: rgba(255, 255, 255, 0.82);
-  --line: rgba(120, 90, 20, 0.28);
-  --gold: #8a6508;
-  --ice: #141a2c;
-  --danger: #c01f45;
+/* ---------- Pastel mapping of the utility classes the pages were written with ---------- */
+:root:not([data-theme="dark"]) [class*="text-white"] { color: rgba(44, 42, 74, 0.7); }
+:root:not([data-theme="dark"]) [class*="border-white"] { border-color: rgba(150, 128, 214, 0.22); }
+:root:not([data-theme="dark"]) [class*="bg-white/"] { background-color: rgba(150, 128, 214, 0.14); }
+:root:not([data-theme="dark"]) [class*="bg-black/"] { background-color: rgba(255, 255, 255, 0.6); }
+:root:not([data-theme="dark"]) [class*="bg-[#07080d]"] { background-color: rgba(255, 255, 255, 0.82); }
+:root:not([data-theme="dark"]) [class*="divide-white"] > * + * { border-color: rgba(150, 128, 214, 0.22); }
+:root:not([data-theme="dark"]) .text-black { color: #2a2150; }
+
+/* Primary buttons: soft lavender fill */
+[class*="bg-[var(--gold)]"] {
+  background-color: var(--accent-fill);
+  box-shadow: 0 6px 16px rgba(150, 128, 214, 0.28);
+  transition: background-color 160ms ease, transform 160ms ease;
 }
-:root[data-theme="light"],
-:root[data-theme="light"] body {
-  background:
-    radial-gradient(1200px 600px at 50% -10%, rgba(232, 201, 120, 0.25), transparent 55%),
-    var(--bg);
+[class*="bg-[var(--gold)]"]:hover:not(:disabled) {
+  background-color: var(--accent-fill-hover);
+  transform: translateY(-1px);
 }
-:root[data-theme="light"] .field {
-  background: rgba(255, 255, 255, 0.9);
-  border-color: rgba(120, 90, 20, 0.3);
+/* Secondary "Next player" button: mint */
+:root:not([data-theme="dark"]) .bg-white {
+  background-color: var(--mint);
+  color: #1f4a3b;
+  box-shadow: 0 6px 16px rgba(110, 200, 170, 0.3);
 }
-:root[data-theme="light"] [class*="text-white"] { color: rgba(20, 26, 44, 0.72); }
-:root[data-theme="light"] [class*="border-white"] { border-color: rgba(20, 26, 44, 0.12); }
-:root[data-theme="light"] [class*="bg-white/"] { background-color: rgba(20, 26, 44, 0.1); }
-:root[data-theme="light"] [class*="bg-black/"] { background-color: rgba(255, 255, 255, 0.55); }
-:root[data-theme="light"] [class*="bg-[#07080d]"] { background-color: rgba(244, 241, 232, 0.92); }
-:root[data-theme="light"] .bg-white { background-color: #141a2c; color: #fff; }
-:root[data-theme="light"] .bg-white.text-black { color: #fff; }
-:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #b7b09a; }
-:root[data-theme="light"] .text-black { color: #111; }
+:root:not([data-theme="dark"]) .bg-white.text-black { color: #1f4a3b; }
+/* Progress bars */
+:root:not([data-theme="dark"]) .h-full[class*="bg-[var(--gold)]"] {
+  background-image: linear-gradient(90deg, #c9bbff, #bdeedb);
+  box-shadow: none;
+}
+
+/* Soft colour accents on rounded cards, rotating so the page feels playful rather than flat */
+:root:not([data-theme="dark"]) .glass.rounded-2xl:nth-of-type(3n+1) { background-image: linear-gradient(160deg, rgba(255, 255, 255, 0.9), rgba(255, 217, 199, 0.28)); }
+:root:not([data-theme="dark"]) .glass.rounded-2xl:nth-of-type(3n+2) { background-image: linear-gradient(160deg, rgba(255, 255, 255, 0.9), rgba(207, 230, 255, 0.35)); }
+:root:not([data-theme="dark"]) .glass.rounded-2xl:nth-of-type(3n) { background-image: linear-gradient(160deg, rgba(255, 255, 255, 0.9), rgba(189, 238, 219, 0.32)); }
 
 /* ---------- Reduced motion (user toggle or OS setting) ---------- */
 :root[data-motion="reduced"] *,
@@ -151,9 +205,9 @@ kbd {
   min-width: 1.4em;
   padding: 0 0.35em;
   border: 1px solid currentColor;
-  border-radius: 4px;
+  border-radius: 6px;
   font-size: 0.75em;
   line-height: 1.5;
   text-align: center;
-  opacity: 0.7;
+  opacity: 0.6;
 }

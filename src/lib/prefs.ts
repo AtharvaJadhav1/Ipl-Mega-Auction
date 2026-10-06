@@ -10,7 +10,7 @@ export type Prefs = {
 };
 
 const KEY = "ipl-prefs";
-const DEFAULTS: Prefs = { theme: "dark", reducedMotion: false, colorBlind: false, voice: false };
+const DEFAULTS: Prefs = { theme: "light", reducedMotion: false, colorBlind: false, voice: false };
 
 let current: Prefs = DEFAULTS;
 let loaded = false;

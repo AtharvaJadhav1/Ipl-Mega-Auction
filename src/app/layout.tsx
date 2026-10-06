@@ -21,11 +21,11 @@ export const metadata: Metadata = {
 };
 
 // Applies saved display preferences before first paint so the theme never flashes.
-const PREFS_SCRIPT = `try{var p=JSON.parse(localStorage.getItem("ipl-prefs")||"{}");var r=document.documentElement;r.dataset.theme=p.theme==="light"?"light":"dark";r.dataset.motion=p.reducedMotion?"reduced":"full";r.dataset.cb=p.colorBlind?"1":"0"}catch(e){}`;
+const PREFS_SCRIPT = `try{var p=JSON.parse(localStorage.getItem("ipl-prefs")||"{}");var r=document.documentElement;r.dataset.theme=p.theme==="dark"?"dark":"light";r.dataset.motion=p.reducedMotion?"reduced":"full";r.dataset.cb=p.colorBlind?"1":"0"}catch(e){}`;
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" data-theme="dark" data-motion="full" data-cb="0" suppressHydrationWarning className={`${display.variable} ${body.variable} h-full antialiased`}>
+    <html lang="en" data-theme="light" data-motion="full" data-cb="0" suppressHydrationWarning className={`${display.variable} ${body.variable} h-full antialiased`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: PREFS_SCRIPT }} />
       </head>
