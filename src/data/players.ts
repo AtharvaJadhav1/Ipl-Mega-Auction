@@ -510,6 +510,91 @@ const ROWS: Row[] = [
   { name: "Tushar Raheja", country: "India", role: "WICKETKEEPER", capped: false, baseL: 30, team: null, acq: "unsold", set: "WK" },
 ];
 
+
+/**
+ * Players from the real 16 Dec 2025 mini-auction pool that were missing from the dataset above
+ * (Wisden unsold list + squad lists). Base prices and capped status follow those lists; roles, countries and
+ * bowling styles are filled from general knowledge and ages / 2026 stats are left unknown rather than invented.
+ * Rows whose name already exists above are skipped when the pool is built.
+ */
+const EXTRA_ROWS: Row[] = [
+  // Sold at the auction but missing from the squad data
+  { name: "Ben Duckett", country: "England", role: "BATTER", bat: "Left Hand", capped: true, overseas: true, baseL: 200, soldL: 200, team: "dc", acq: "auction", set: "OV" },
+  { name: "Prithvi Raj Yarra", country: "India", role: "BOWLER", bowl: "Left Arm Fast", capped: false, baseL: 30, soldL: 30, team: "gt", acq: "auction", set: "EM" },
+
+  // Unsold: capped overseas
+  { name: "Devon Conway", country: "New Zealand", role: "WICKETKEEPER", bat: "Left Hand", capped: true, overseas: true, baseL: 200, team: null, acq: "unsold", set: "WK" },
+  { name: "Jonny Bairstow", country: "England", role: "WICKETKEEPER", bat: "Right Hand", capped: true, overseas: true, baseL: 100, team: null, acq: "unsold", set: "WK" },
+  { name: "Wiaan Mulder", country: "South Africa", role: "ALL_ROUNDER", bat: "Right Hand", bowl: "Right Arm Medium", capped: true, overseas: true, baseL: 100, team: null, acq: "unsold", set: "AR" },
+  { name: "Spencer Johnson", country: "Australia", role: "BOWLER", bowl: "Left Arm Fast", capped: true, overseas: true, baseL: 150, team: null, acq: "unsold", set: "OV" },
+  { name: "Fazalhaq Farooqi", country: "Afghanistan", role: "BOWLER", bowl: "Left Arm Fast", capped: true, overseas: true, baseL: 100, team: null, acq: "unsold", set: "OV" },
+  { name: "Maheesh Theekshana", country: "Sri Lanka", role: "BOWLER", bowl: "Right Arm Off Break", capped: true, overseas: true, baseL: 200, team: null, acq: "unsold", set: "OV" },
+  { name: "Mujeeb Ur Rahman", country: "Afghanistan", role: "BOWLER", bowl: "Right Arm Off Break", capped: true, overseas: true, baseL: 200, team: null, acq: "unsold", set: "OV" },
+  { name: "Dasun Shanaka", country: "Sri Lanka", role: "ALL_ROUNDER", bat: "Right Hand", bowl: "Right Arm Medium", capped: true, overseas: true, baseL: 75, team: null, acq: "unsold", set: "AR" },
+  { name: "Waqar Salamkheil", country: "Afghanistan", role: "BOWLER", bowl: "Right Arm Leg Break", capped: true, overseas: true, baseL: 100, team: null, acq: "unsold", set: "OV" },
+  { name: "Daniel Lawrence", country: "England", role: "BATTER", bat: "Right Hand", capped: true, overseas: true, baseL: 200, team: null, acq: "unsold", set: "OV" },
+  { name: "Alzarri Joseph", country: "West Indies", role: "BOWLER", bowl: "Right Arm Fast", capped: true, overseas: true, baseL: 200, team: null, acq: "unsold", set: "OV" },
+  { name: "Jhye Richardson", country: "Australia", role: "BOWLER", bowl: "Right Arm Fast", capped: true, overseas: true, baseL: 150, team: null, acq: "unsold", set: "OV" },
+  { name: "Richard Gleeson", country: "England", role: "BOWLER", bowl: "Right Arm Fast", capped: true, overseas: true, baseL: 75, team: null, acq: "unsold", set: "OV" },
+  { name: "Nathan Smith", country: "New Zealand", role: "BOWLER", bowl: "Right Arm Fast", capped: true, overseas: true, baseL: 75, team: null, acq: "unsold", set: "OV" },
+  { name: "William Sutherland", country: "Australia", role: "ALL_ROUNDER", bat: "Right Hand", bowl: "Right Arm Medium", capped: true, overseas: true, baseL: 100, team: null, acq: "unsold", set: "AR" },
+
+  // Unsold: capped Indian
+  { name: "Deepak Hooda", country: "India", role: "ALL_ROUNDER", bat: "Right Hand", bowl: "Right Arm Off Break", capped: true, baseL: 75, team: null, acq: "unsold", set: "IC" },
+  { name: "Chetan Sakariya", country: "India", role: "BOWLER", bowl: "Left Arm Fast", capped: true, baseL: 75, team: null, acq: "unsold", set: "IC" },
+
+  // Unsold: uncapped Indian batters / keepers
+  { name: "Aarya Desai", country: "India", role: "BATTER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Yash Dhull", country: "India", role: "BATTER", bat: "Right Hand", capped: false, baseL: 30, team: null, acq: "unsold", set: "EM" },
+  { name: "Abhinav Tejrana", country: "India", role: "BATTER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Ruchit Ahir", country: "India", role: "BATTER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Vansh Bedi", country: "India", role: "WICKETKEEPER", capped: false, baseL: 30, team: null, acq: "unsold", set: "WK" },
+  { name: "Salman Nizar", country: "India", role: "BATTER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Mani Sankar Mura Singh", country: "India", role: "BATTER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Macneil Noronha", country: "India", role: "BATTER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Chintal Gandhi", country: "India", role: "BATTER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Irfan Umair", country: "India", role: "BATTER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+
+  // Unsold: uncapped Indian all-rounders
+  { name: "Mahipal Lomror", country: "India", role: "ALL_ROUNDER", bat: "Left Hand", capped: false, baseL: 50, team: null, acq: "unsold", set: "IU" },
+  { name: "Rajvardhan Hangargekar", country: "India", role: "ALL_ROUNDER", bowl: "Right Arm Fast", capped: false, baseL: 40, team: null, acq: "unsold", set: "IU" },
+  { name: "Vijay Shankar", country: "India", role: "ALL_ROUNDER", bat: "Right Hand", bowl: "Right Arm Medium", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Tanush Kotian", country: "India", role: "ALL_ROUNDER", bowl: "Right Arm Off Break", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Sanvir Singh", country: "India", role: "ALL_ROUNDER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Karn Sharma", country: "India", role: "ALL_ROUNDER", bowl: "Right Arm Leg Break", capped: false, baseL: 50, team: null, acq: "unsold", set: "IU" },
+  { name: "Mohit Rathee", country: "India", role: "ALL_ROUNDER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Karan Lal", country: "India", role: "ALL_ROUNDER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Utkarsh Singh", country: "India", role: "ALL_ROUNDER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Ayush Vartak", country: "India", role: "ALL_ROUNDER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Siddharth Yadav", country: "India", role: "ALL_ROUNDER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Ritik Tada", country: "India", role: "ALL_ROUNDER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "RS Ambrish", country: "India", role: "ALL_ROUNDER", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+
+  // Unsold: uncapped Indian bowlers
+  { name: "Eden Apple Tom", country: "India", role: "BOWLER", bowl: "Right Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Kamlesh Nagarkoti", country: "India", role: "BOWLER", bowl: "Right Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Raj Limbani", country: "India", role: "BOWLER", bowl: "Right Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Simarjeet Singh", country: "India", role: "BOWLER", bowl: "Right Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Akash Madhwal", country: "India", role: "BOWLER", bowl: "Right Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Shivam Shukla", country: "India", role: "BOWLER", bowl: "Right Arm Leg Break", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Kartikeya Singh", country: "India", role: "BOWLER", bowl: "Left Arm Orthodox", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "KM Asif", country: "India", role: "BOWLER", bowl: "Right Arm Fast", capped: false, baseL: 40, team: null, acq: "unsold", set: "IU" },
+  { name: "Murugan Ashwin", country: "India", role: "BOWLER", bowl: "Right Arm Leg Break", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Tejas Baroka", country: "India", role: "BOWLER", bowl: "Left Arm Orthodox", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "KC Cariappa", country: "India", role: "BOWLER", bowl: "Right Arm Leg Break", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "M Dheeraj Kumar", country: "India", role: "BOWLER", bowl: "Right Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Tanay Thyagarajann", country: "India", role: "BOWLER", bowl: "Left Arm Orthodox", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Jikku Bright", country: "India", role: "BOWLER", bowl: "Right Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Izaz Sawariya", country: "India", role: "BOWLER", bowl: "Left Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Money Grewal", country: "India", role: "BOWLER", bowl: "Right Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+  { name: "Chama Milind", country: "India", role: "BOWLER", bowl: "Left Arm Fast", capped: false, baseL: 30, team: null, acq: "unsold", set: "IU" },
+
+  // Unsold: uncapped overseas
+  { name: "Wahidullah Zadran", country: "Afghanistan", role: "BOWLER", bowl: "Right Arm Fast", capped: false, overseas: true, baseL: 30, team: null, acq: "unsold", set: "OV" },
+  { name: "Connor Esterhuizen", country: "South Africa", role: "WICKETKEEPER", bat: "Right Hand", capped: false, overseas: true, baseL: 30, team: null, acq: "unsold", set: "OV" },
+  { name: "Daniel Lategan", country: "South Africa", role: "BATTER", bat: "Right Hand", capped: false, overseas: true, baseL: 30, team: null, acq: "unsold", set: "OV" },
+];
+
 export const SETS: { code: string; name: string; order: number }[] = [
   { code: "M1", name: "Marquee Players", order: 1 },
   { code: "BAT", name: "Marquee Batters", order: 2 },
@@ -523,4 +608,5 @@ export const SETS: { code: string; name: string; order: number }[] = [
   { code: "ACCEL", name: "Accelerated Round", order: 99 },
 ];
 
-export const PLAYER_SEEDS: PlayerSeed[] = ROWS.map(toPlayer);
+const KNOWN = new Set(ROWS.map((r) => slug(r.name)));
+export const PLAYER_SEEDS: PlayerSeed[] = [...ROWS, ...EXTRA_ROWS.filter((r) => !KNOWN.has(slug(r.name)))].map(toPlayer);

@@ -111,6 +111,7 @@ model AuctionSession {
   events          AuctionEvent[]
   playingXi       PlayingXiSlot[]
   trades          Trade[]
+  seasonSim       SeasonSim?
 }
 
 model SessionTeam {
@@ -126,6 +127,7 @@ model SessionTeam {
   rtmCards      Int      @default(0)
   grudge        Float    @default(0)
   lostPlayerIds String   @default("[]")
+  plan          String   @default("{}")
   members       SessionSquadMember[]
 
   @@unique([sessionId, franchiseId])
@@ -159,6 +161,7 @@ model AuctionLot {
   soldTeamId     String?
   passedTeamIds  String   @default("[]")
   rtmTeamId      String?
+  rtmStage       String?
   bids           Bid[]
 
   @@index([sessionId, orderIndex])
@@ -213,4 +216,12 @@ model Trade {
   createdAt     DateTime @default(now())
 
   @@index([sessionId, createdAt])
+}
+
+model SeasonSim {
+  sessionId String   @id
+  session   AuctionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  rerolls   Int      @default(0)
+  json      String
+  createdAt DateTime @default(now())
 }

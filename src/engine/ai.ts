@@ -26,6 +26,10 @@ export type AiTeamView = {
   grudge?: number;
   /** Roles of players this team lost to the user, for revenge bidding. */
   lostRoles?: string[];
+  /** Players the franchise planned to chase before the auction began. */
+  targets?: string[];
+  /** Budget the franchise is holding back for the targets that have not come up yet. */
+  reserve?: number;
 };
 
 export type PlayerView = {
@@ -151,6 +155,13 @@ export function computeMaxBid(
     const kind = bowlingKind(player.bowlingStyle);
     if (kind === "pace" && team.gaps.pace > 0) value *= 1 + team.gaps.pace * 0.12;
     if (kind === "spin" && team.gaps.spin > 0) value *= 1 + team.gaps.spin * 0.12;
+  }
+
+  // Auction plan: pay up for the pre-auction shortlist, and don't burn the budget those targets need on anyone else.
+  if (team.targets?.includes(player.id)) value *= 1.2;
+  else if (team.reserve && team.reserve > 0) {
+    const free = Math.max(0, team.purse - team.reserve);
+    value = Math.min(value, Math.max(player.basePrice, free * 0.35));
   }
 
   // Rivals with memory: resentment toward the user, and revenge for players the user took.

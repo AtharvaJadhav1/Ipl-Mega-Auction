@@ -6,6 +6,9 @@ export type AuctionRules = {
   maxOverseasPlayers: number;
   minPlayerPrice: number;
   overseasMaxFee: number | null;
+  /** Every squad must be able to field this many keepers and specialist bowlers. */
+  minWicketkeepers: number;
+  minBowlers: number;
 };
 
 export const IPL_2026_RULES: AuctionRules = {
@@ -16,6 +19,8 @@ export const IPL_2026_RULES: AuctionRules = {
   maxOverseasPlayers: 8,
   minPlayerPrice: 3_000_000,
   overseasMaxFee: 180_000_000,
+  minWicketkeepers: 2,
+  minBowlers: 6,
 };
 
 export const DEFAULT_RULES = IPL_2026_RULES;

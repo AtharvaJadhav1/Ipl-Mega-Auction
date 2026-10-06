@@ -80,6 +80,9 @@ export default function SummaryPage({ params }: { params: Promise<{ id: string }
         <Link href={`/replay/${id}`} className="gold">
           Replay →
         </Link>
+        <Link href={`/season/${id}`} className="gold">
+          Play the season →
+        </Link>
       </div>
     </main>
   );

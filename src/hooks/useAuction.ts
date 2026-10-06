@@ -91,9 +91,9 @@ export function useAuction(id: string) {
       }, failures.current > 0 ? RETRY_MS : (RESULT_MS[data.speed] ?? 3000));
       return () => clearTimeout(t);
     }
-    if (["COMPLETE", "RETENTION"].includes(data.phase)) return;
+    if (["COMPLETE", "RETENTION", "SHORTLIST"].includes(data.phase)) return;
     // The user's Right to Match decision is theirs alone.
-    if (data.phase === "RTM" && data.rtmPending?.isUser) return;
+    if (data.phase === "RTM" && data.rtmPending?.awaitingUser) return;
     const user = data.userTeam;
     const lot = data.currentLot;
     const passed = data.passedTeamIds;
@@ -121,7 +121,8 @@ export function useAuction(id: string) {
     next: () => run(`/api/auction/${id}/next`),
     skip: () => run(`/api/auction/${id}/skip`),
     begin: () => run(`/api/auction/${id}/begin`),
-    rtm: (action: "match" | "decline") => run(`/api/auction/${id}/rtm`, { body: { action } }),
+    rtm: (action: "match" | "decline" | "raise" | "stand") => run(`/api/auction/${id}/rtm`, { body: { action } }),
+    shortlist: (playerIds: string[]) => run(`/api/auction/${id}/shortlist`, { body: { playerIds } }),
     retain: (playerIds: string[]) => run(`/api/auction/${id}/retention`, { body: { playerIds } }),
     setSpeed: (speed: string) => run(`/api/auction/${id}/settings`, { body: { speed }, silent: true }),
     setPaused: (paused: boolean) => run(`/api/auction/${id}/settings`, { body: { paused } }),

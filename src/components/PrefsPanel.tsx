@@ -25,6 +25,14 @@ export function PrefsPanel() {
           />
         </div>
       )}
+      <div className="flex items-center justify-end gap-2">
+      <button
+        aria-label={prefs.theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        className="glass rounded-full px-4 py-2.5 text-xs uppercase tracking-widest"
+        onClick={() => setPrefs({ theme: prefs.theme === "dark" ? "light" : "dark" })}
+      >
+        {prefs.theme === "dark" ? "☀ Light" : "☾ Dark"}
+      </button>
       <button
         aria-expanded={open}
         aria-label="Display and accessibility settings"
@@ -33,6 +41,7 @@ export function PrefsPanel() {
       >
         ⚙
       </button>
+      </div>
     </div>
   );
 }

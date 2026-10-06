@@ -2,12 +2,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { Prisma } from "@prisma/client";
 import { FRANCHISES } from "@/data/franchises";
 import { PLAYER_SEEDS, SETS, type PlayerSeed } from "@/data/players";
-import { baseValue, computeMaxBid, decideBid, MAX_PLAYER_PRICE, mulberry32, roleNeed, type AiTeamView, type PlayerView } from "@/engine/ai";
+import { baseValue, computeMaxBid, decideBid, MAX_PLAYER_PRICE, mulberry32, roleNeed, softCap, type AiTeamView, type PlayerView } from "@/engine/ai";
 import { canAfford, nextBidAmount } from "@/engine/bids";
 import { commentaryFor } from "@/engine/commentary";
 import { gameRatings } from "@/engine/ratings";
 import { DEFAULT_RULES, parseRules, type AuctionRules } from "@/engine/rules";
 import { aiRetentionPicks, CAPPED_SLABS, MAX_CAPPED_RETAINED, MAX_RETAINED, MAX_UNCAPPED_RETAINED, planRetention, rtmCardsAfterRetention, UNCAPPED_SLAB } from "@/engine/retention";
+import { compositionError } from "@/engine/composition";
+import { simulateSeason, type SeasonPlayer, type SeasonResult } from "@/engine/season";
 import { areRivals, franchiseGaps } from "@/engine/strategy";
 import { evaluateTrade } from "@/engine/trade";
 import { formatINR } from "@/lib/money";
@@ -124,7 +126,62 @@ function toAiTeam(t: FullSession["teams"][number], session?: FullSession): AiTea
     gaps: franchiseGaps(t.franchiseId),
     grudge: t.grudge,
     lostRoles: lostIds.map((id) => roleOf.get(id)).filter((r): r is string => !!r),
+    ...planView(t, session),
   };
+}
+
+type Plan = { targets?: { id: string; est: number }[] };
+
+function planView(t: FullSession["teams"][number], session?: FullSession): { targets?: string[]; reserve?: number } {
+  let plan: Plan = {};
+  try {
+    plan = JSON.parse(t.plan || "{}") as Plan;
+  } catch {
+    /* ignore a corrupt plan */
+  }
+  if (!plan.targets?.length) return {};
+  const open = new Set(session?.lots.filter((l) => l.status === "PENDING" || l.status === "LIVE").map((l) => l.playerId) ?? []);
+  const upcoming = plan.targets.filter((x) => open.has(x.id)).sort((a, b) => b.est - a.est).slice(0, 3);
+  const reserve = Math.min(t.purse * 0.45, upcoming.reduce((a, x) => a + x.est * 0.7, 0));
+  return { targets: plan.targets.map((x) => x.id), reserve };
+}
+
+/** Pre-auction plan for each AI franchise: a shortlist of players it will chase, weighted by real squad gaps and personality. */
+async function buildAiPlans(sessionId: string) {
+  const s = await load(sessionId);
+  const pool = s.lots
+    .filter((l) => l.status === "PENDING" || l.status === "LIVE")
+    .map((l) => {
+      const view = toPlayerView(l.player, lotBase(s, l));
+      const overall = gameRatings(l.player).overall;
+      return { playerId: l.playerId, view, overall, est: Math.min(MAX_PLAYER_PRICE, Math.round(softCap(baseValue(view, overall)))) };
+    });
+  for (const t of s.teams.filter((x) => !x.isUser)) {
+    const gaps = franchiseGaps(t.franchiseId);
+    const personality = t.franchise.personality;
+    const scored = pool
+      .filter((p) => p.est <= t.purse * 0.25)
+      .map((p) => {
+        let score = p.overall * (1 + (gaps.role[p.view.role] ?? 0) * 1.2);
+        if (personality === "star-focused") score = Math.pow(p.overall / 80, 2) * 80 * (1 + (gaps.role[p.view.role] ?? 0));
+        if (personality === "bowling-focused" && (p.view.role === "BOWLER" || p.view.role === "ALL_ROUNDER")) score *= 1.15;
+        if (personality === "conservative") score *= 1 - Math.min(0.2, p.est / t.purse);
+        return { ...p, score };
+      })
+      .sort((a, b) => b.score - a.score);
+    const picks: typeof scored = [];
+    let overseas = 0;
+    for (const p of scored) {
+      if (picks.length >= 6) break;
+      if (p.view.isOverseas && overseas >= 3) continue;
+      if (p.view.isOverseas) overseas += 1;
+      picks.push(p);
+    }
+    await prisma.sessionTeam.update({
+      where: { id: t.id },
+      data: { plan: JSON.stringify({ targets: picks.map((p) => ({ id: p.playerId, est: p.est })) }) },
+    });
+  }
 }
 
 async function addEvent(
@@ -326,7 +383,10 @@ export async function startAuction(input: {
       });
     }
 
-    if (!mega) await createLots(sessionId, input.mode, seed, new Set());
+    if (!mega) {
+      await createLots(sessionId, input.mode, seed, new Set());
+      await buildAiPlans(sessionId);
+    }
   } catch (e) {
     await prisma.auctionSession.deleteMany({ where: { id: sessionId } });
     throw e;
@@ -392,6 +452,7 @@ export async function confirmRetention(sessionId: string, pickIds: string[]) {
 
   const retainedIds = new Set(plans.flatMap((p) => p.picks.map((x) => x.id)));
   await createLots(sessionId, session.mode, session.seed, retainedIds);
+  await buildAiPlans(sessionId);
   await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "INTRO", currentLotIndex: 0, hammerCount: 0 } });
   return getSession(sessionId);
 }
@@ -446,22 +507,55 @@ export function decorate(session: FullSession) {
         : validatePurchase(user, lot.player, nextBid, rules);
 
   const rtmTeam = session.phase === "RTM" && lot?.rtmTeamId ? session.teams.find((t) => t.franchiseId === lot.rtmTeamId) : null;
-  const rtmPending = rtmTeam && lot
-    ? {
-        teamId: rtmTeam.franchiseId,
-        shortName: rtmTeam.franchise.shortName,
-        price: lot.currentBid,
-        winnerId: lot.currentBidderId,
-        isUser: rtmTeam.isUser,
-        canMatch: rtmTeam.isUser ? !validatePurchase(rtmTeam, lot.player, lot.currentBid, rules) : false,
-      }
-    : null;
+  const rtmWinner = lot ? session.teams.find((t) => t.franchiseId === lot.currentBidderId) : null;
+  const rtmStage = lot?.rtmStage ?? "DECIDE";
+  const raiseTo = lot ? nextBidAmount(lot.currentBid, basePrice) : 0;
+  const rtmPending =
+    rtmTeam && rtmWinner && lot
+      ? {
+          teamId: rtmTeam.franchiseId,
+          shortName: rtmTeam.franchise.shortName,
+          price: lot.currentBid,
+          winnerId: rtmWinner.franchiseId,
+          stage: rtmStage,
+          // Who has to act: the former team at DECIDE and FINAL, the winning bidder at COUNTER.
+          awaitingUser: rtmStage === "COUNTER" ? rtmWinner.isUser : rtmTeam.isUser,
+          isUser: rtmTeam.isUser,
+          userIsWinner: rtmWinner.isUser,
+          canMatch: rtmTeam.isUser ? !validatePurchase(rtmTeam, lot.player, lot.currentBid, rules) : false,
+          raiseTo,
+          canRaise: rtmWinner.isUser ? !validatePurchase(rtmWinner, lot.player, raiseTo, rules) : false,
+        }
+      : null;
   // Which franchise could still use RTM on the player on the block (shown as a hint to the user).
   const rtmHint =
     lot && lot.setCode !== "ACCEL" && lot.player.actual2026TeamId
       ? (() => {
           const t = session.teams.find((x) => x.franchiseId === lot.player.actual2026TeamId);
           return t && t.rtmCards > 0 ? { teamId: t.franchiseId, shortName: t.franchise.shortName, cards: t.rtmCards } : null;
+        })()
+      : null;
+
+  const shortlist =
+    session.phase === "SHORTLIST"
+      ? (() => {
+          const noms = aiNominations(session);
+          return {
+            candidates: session.lots
+              .filter((l) => l.status === "UNSOLD")
+              .map((l) => ({
+                playerId: l.playerId,
+                name: l.player.name,
+                role: l.player.role,
+                isOverseas: l.player.isOverseas,
+                capped: l.player.capped,
+                basePrice: lotBase(session, l),
+                overall: gameRatings(l.player).overall,
+                interest: (noms.get(l.playerId) ?? []).length,
+                interestedTeams: (noms.get(l.playerId) ?? []).map((id) => session.teams.find((t) => t.franchiseId === id)?.franchise.shortName ?? id),
+              }))
+              .sort((a, b) => b.interest - a.interest || b.overall - a.overall),
+          };
         })()
       : null;
 
@@ -497,6 +591,7 @@ export function decorate(session: FullSession) {
     rtmPending,
     rtmHint,
     retention,
+    shortlist,
     userBidError,
     challenge: challengeStatus(session.challengeId, user.members, rules),
     lots: session.lots.map((l) => ({
@@ -664,7 +759,7 @@ function validatePurchase(
   if (!canAfford(team.purse, amount, team.members.length, rules)) {
     return "Unable to place bid. Your purse is insufficient (including minimum squad reserve).";
   }
-  return null;
+  return compositionError(team.members.map((m) => m.player), player, rules);
 }
 
 async function applyBid(session: FullSession, lot: FullSession["lots"][number], teamId: string, amount: number) {
@@ -718,7 +813,7 @@ async function load(id: string) {
 export async function tickAuction(sessionId: string) {
   const session = await load(sessionId);
   if (session.status !== "LIVE" || session.paused) return decorate(session);
-  if (session.phase === "INTRO" || session.phase === "SOLD" || session.phase === "UNSOLD" || session.phase === "RETENTION") return decorate(session);
+  if (session.phase === "INTRO" || session.phase === "SOLD" || session.phase === "UNSOLD" || session.phase === "RETENTION" || session.phase === "SHORTLIST") return decorate(session);
   const lot = session.lots[session.currentLotIndex];
   if (!lot || lot.status !== "LIVE") return decorate(session);
 
@@ -822,7 +917,7 @@ function rtmCandidate(session: FullSession, lot: FullSession["lots"][number], ru
 async function concludeSale(session: FullSession, lot: FullSession["lots"][number], rules: AuctionRules) {
   const rtm = rtmCandidate(session, lot, rules);
   if (!rtm) return markSold(session, lot);
-  await prisma.auctionLot.update({ where: { id: lot.id }, data: { rtmTeamId: rtm.franchiseId } });
+  await prisma.auctionLot.update({ where: { id: lot.id }, data: { rtmTeamId: rtm.franchiseId, rtmStage: "DECIDE" } });
   await prisma.auctionSession.update({ where: { id: session.id }, data: { phase: "RTM", hammerCount: 0 } });
   await addEvent(
     session.id,
@@ -833,13 +928,57 @@ async function concludeSale(session: FullSession, lot: FullSession["lots"][numbe
   return getSession(session.id);
 }
 
+/**
+ * RTM runs in three stages, as in the real auction:
+ *  DECIDE  - the former team says whether it will use its card,
+ *  COUNTER - the winning bidder may raise once,
+ *  FINAL   - the former team matches the (possibly raised) price or lets the player go.
+ */
 async function aiRtmTick(session: FullSession, lot: FullSession["lots"][number], rules: AuctionRules) {
-  const team = session.teams.find((t) => t.franchiseId === lot.rtmTeamId);
-  if (!team) return markSold(session, lot);
-  if (team.isUser) return decorate(session);
+  const rtmTeam = session.teams.find((t) => t.franchiseId === lot.rtmTeamId);
+  const winner = session.teams.find((t) => t.franchiseId === lot.currentBidderId);
+  if (!rtmTeam || !winner) return markSold(session, lot);
+  const stage = lot.rtmStage ?? "DECIDE";
   const rng = mulberry32(session.seed + session.currentLotIndex * 31 + session.tickCount);
-  const max = aiMaxBid(session, team, lot, rules, rng);
-  return finishRtm(session, lot, team, lot.currentBid <= max && !validatePurchase(team, lot.player, lot.currentBid, rules));
+
+  if (stage === "DECIDE") {
+    if (rtmTeam.isUser) return decorate(session);
+    const wants = lot.currentBid <= aiMaxBid(session, rtmTeam, lot, rules, rng) && !validatePurchase(rtmTeam, lot.player, lot.currentBid, rules);
+    return wants ? invokeRtm(session, lot, rtmTeam, winner) : finishRtm(session, lot, rtmTeam, false);
+  }
+  if (stage === "COUNTER") {
+    if (winner.isUser) return decorate(session);
+    const raised = nextBidAmount(lot.currentBid, lotBase(session, lot));
+    const willRaise = raised <= aiMaxBid(session, winner, lot, rules, rng) && !validatePurchase(winner, lot.player, raised, rules) && rng() < 0.55;
+    return counterRtm(session, lot, winner, willRaise ? raised : null);
+  }
+  if (rtmTeam.isUser) return decorate(session);
+  const match = lot.currentBid <= aiMaxBid(session, rtmTeam, lot, rules, rng) && !validatePurchase(rtmTeam, lot.player, lot.currentBid, rules);
+  return finishRtm(session, lot, rtmTeam, match);
+}
+
+async function invokeRtm(session: FullSession, lot: FullSession["lots"][number], rtmTeam: FullSession["teams"][number], winner: FullSession["teams"][number]) {
+  await prisma.auctionLot.update({ where: { id: lot.id }, data: { rtmStage: "COUNTER" } });
+  await addEvent(session.id, "RTM_USED", `${rtmTeam.franchise.shortName} use the Right to Match; ${winner.franchise.shortName} may raise once.`, {
+    playerId: lot.playerId,
+    teamId: rtmTeam.franchiseId,
+  });
+  return getSession(session.id);
+}
+
+async function counterRtm(session: FullSession, lot: FullSession["lots"][number], winner: FullSession["teams"][number], raisedTo: number | null) {
+  if (raisedTo != null) {
+    await applyBid(session, lot, winner.franchiseId, raisedTo);
+    await addEvent(session.id, "RTM_RAISE", `${winner.franchise.shortName} raise to ${formatINR(raisedTo)}.`, {
+      playerId: lot.playerId,
+      teamId: winner.franchiseId,
+      amount: raisedTo,
+    });
+  } else {
+    await addEvent(session.id, "RTM_STAND", `${winner.franchise.shortName} stand on ${formatINR(lot.currentBid)}.`, { playerId: lot.playerId, teamId: winner.franchiseId });
+  }
+  await prisma.auctionLot.update({ where: { id: lot.id }, data: { rtmStage: "FINAL" } });
+  return getSession(session.id);
 }
 
 async function finishRtm(session: FullSession, lot: FullSession["lots"][number], team: FullSession["teams"][number], match: boolean) {
@@ -852,25 +991,46 @@ async function finishRtm(session: FullSession, lot: FullSession["lots"][number],
     );
     return markSold(session, lot, { buyerId: team.franchiseId, viaRtm: true });
   }
-  await addEvent(session.id, "RTM_DECLINED", `${team.franchise.shortName} decline to match for ${lot.player.name}.`, {
+  await addEvent(session.id, "RTM_DECLINED", `${team.franchise.shortName} let ${lot.player.name} go.`, {
     playerId: lot.playerId,
     teamId: team.franchiseId,
   });
   return markSold(session, lot);
 }
 
-export async function userRtm(sessionId: string, action: "match" | "decline") {
+export type RtmAction = "match" | "decline" | "raise" | "stand";
+
+export async function userRtm(sessionId: string, action: RtmAction) {
   const session = await load(sessionId);
   if (session.status !== "LIVE") throw new Error("Auction already completed.");
   if (session.paused) throw new Error("The auction is paused.");
   if (session.phase !== "RTM") throw new Error("No Right to Match decision is pending.");
+  const rules = parseRules(session.rulesJson);
   const lot = session.lots[session.currentLotIndex];
   const user = session.teams.find((t) => t.isUser)!;
-  if (!lot || lot.rtmTeamId !== user.franchiseId) throw new Error("The Right to Match belongs to another franchise.");
+  const stage = lot?.rtmStage ?? "DECIDE";
+  const winner = session.teams.find((t) => t.franchiseId === lot?.currentBidderId);
+  if (!lot || !winner) throw new Error("No Right to Match decision is pending.");
+
+  if (stage === "COUNTER") {
+    if (winner.franchiseId !== user.franchiseId) throw new Error("The winning bidder decides this step.");
+    if (action === "raise") {
+      const raised = nextBidAmount(lot.currentBid, lotBase(session, lot));
+      const err = validatePurchase(user, lot.player, raised, rules);
+      if (err) throw new Error(err);
+      return counterRtm(session, lot, user, raised);
+    }
+    if (action === "stand") return counterRtm(session, lot, user, null);
+    throw new Error("Choose to raise or stand.");
+  }
+
+  if (lot.rtmTeamId !== user.franchiseId) throw new Error("The Right to Match belongs to another franchise.");
+  if (action !== "match" && action !== "decline") throw new Error("Choose to match or decline.");
   if (action === "match") {
-    const err = validatePurchase(user, lot.player, lot.currentBid, parseRules(session.rulesJson));
+    const err = validatePurchase(user, lot.player, lot.currentBid, rules);
     if (err) throw new Error(err);
   }
+  if (stage === "DECIDE") return action === "match" ? invokeRtm(session, lot, user, winner) : finishRtm(session, lot, user, false);
   return finishRtm(session, lot, user, action === "match");
 }
 
@@ -939,7 +1099,7 @@ export async function skipPlayer(sessionId: string) {
   const session = await load(sessionId);
   if (session.status !== "LIVE") throw new Error("Auction already completed.");
   if (session.paused) throw new Error("The auction is paused.");
-  if (session.phase === "RETENTION") throw new Error("Finish the retention window first.");
+  if (session.phase === "RETENTION" || session.phase === "SHORTLIST") throw new Error("Finish the current window first.");
   if (session.phase === "SOLD" || session.phase === "UNSOLD") throw new Error("This player is already resolved.");
   const lot = session.lots[session.currentLotIndex];
   if (!lot || lot.status !== "LIVE") throw new Error("Player is no longer available.");
@@ -960,8 +1120,12 @@ export async function skipPlayer(sessionId: string) {
     if (cur.phase === "SOLD" || cur.phase === "UNSOLD") break;
     const curLot = cur.lots[cur.currentLotIndex];
     await quietMode.run(true, async () => {
-      if (cur.phase === "RTM" && curLot?.rtmTeamId === user.franchiseId) await userRtm(sessionId, "decline");
-      else await tickAuction(sessionId);
+      if (cur.phase === "RTM" && curLot) {
+        const stage = curLot.rtmStage ?? "DECIDE";
+        if (stage === "COUNTER" && curLot.currentBidderId === user.franchiseId) return void (await userRtm(sessionId, "stand"));
+        if (stage !== "COUNTER" && curLot.rtmTeamId === user.franchiseId) return void (await userRtm(sessionId, "decline"));
+      }
+      await tickAuction(sessionId);
     });
   }
   return getSession(sessionId);
@@ -977,7 +1141,10 @@ export async function nextPlayer(sessionId: string) {
   if (nextIndex >= session.lots.length) {
     const unsold = session.lots.filter((l) => l.status === "UNSOLD");
     if (unsold.length && !session.lots.some((l) => l.setCode === "ACCEL")) {
-      return startAccelerated(session, unsold);
+      // Teams nominate who they want back; the accelerated round only features nominated players.
+      await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "SHORTLIST", hammerCount: 0 } });
+      await addEvent(sessionId, "SHORTLIST_OPEN", "Accelerated round: franchises are drawing up their shortlists.");
+      return getSession(sessionId);
     }
     await prisma.auctionSession.update({ where: { id: sessionId }, data: { status: "COMPLETE", phase: "COMPLETE" } });
     return getSession(sessionId);
@@ -1035,6 +1202,41 @@ async function startAccelerated(session: FullSession, unsold: FullSession["lots"
     { playerId: first.playerId },
   );
   return getSession(session.id);
+}
+
+/** Which AI franchises would nominate each unsold player for the accelerated round. */
+function aiNominations(session: FullSession): Map<string, string[]> {
+  const rules = parseRules(session.rulesJson);
+  const unsold = session.lots.filter((l) => l.status === "UNSOLD");
+  const out = new Map<string, string[]>();
+  for (const t of session.teams.filter((x) => !x.isUser)) {
+    if (t.members.length >= rules.maxSquadSize) continue;
+    const view = toAiTeam(t, session);
+    const wanted = Math.min(5, Math.max(2, rules.minSquadSize - t.members.length + 1));
+    const ranked = unsold
+      .filter((l) => !validatePurchase(t, l.player, lotBase(session, l), rules))
+      .map((l) => ({ l, score: gameRatings(l.player).overall * roleNeed(view, l.player.role) * (1 + (view.gaps?.role[l.player.role] ?? 0)) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, wanted);
+    for (const { l } of ranked) out.set(l.playerId, [...(out.get(l.playerId) ?? []), t.franchiseId]);
+  }
+  return out;
+}
+
+export async function confirmShortlist(sessionId: string, userPlayerIds: string[]) {
+  const session = await load(sessionId);
+  if (session.status !== "LIVE" || session.phase !== "SHORTLIST") throw new Error("The shortlist window is not open.");
+  const unsold = session.lots.filter((l) => l.status === "UNSOLD");
+  const byPlayer = new Map(unsold.map((l) => [l.playerId, l]));
+  for (const id of userPlayerIds) if (!byPlayer.has(id)) throw new Error("You can only shortlist players who went unsold.");
+  const chosen = new Set([...userPlayerIds, ...aiNominations(session).keys()]);
+  const selected = unsold.filter((l) => chosen.has(l.playerId));
+  if (!selected.length) {
+    await prisma.auctionSession.update({ where: { id: sessionId }, data: { status: "COMPLETE", phase: "COMPLETE" } });
+    return getSession(sessionId);
+  }
+  await addEvent(sessionId, "SHORTLIST", `Accelerated round shortlist: ${selected.length} players return to the floor.`);
+  return startAccelerated(session, selected);
 }
 
 export const XI_SLOT_KEYS = ["open1", "open2", "three", "four", "five", "ar1", "ar2", "wk", "fast1", "fast2", "spin"];
@@ -1331,4 +1533,44 @@ export async function proposeTrade(sessionId: string, partnerFranchiseId: string
     },
   });
   return { accepted: verdict.accepted, message: verdict.message, ratio: verdict.ratio, session: await getSession(sessionId) };
+}
+
+function seasonPlayer(p: FullSession["teams"][number]["members"][number]["player"]): SeasonPlayer {
+  const r = gameRatings(p);
+  return { id: p.id, name: p.name, role: p.role, isOverseas: p.isOverseas, overall: r.overall, batting: r.batting, bowling: r.bowling };
+}
+
+export type StoredSeason = { rerolls: number; result: SeasonResult; names: Record<string, string> };
+
+export async function getSeason(sessionId: string): Promise<StoredSeason | null> {
+  const row = await prisma.seasonSim.findUnique({ where: { sessionId } });
+  if (!row) return null;
+  const parsed = JSON.parse(row.json) as { result: SeasonResult; names: Record<string, string> };
+  return { rerolls: row.rerolls, result: parsed.result, names: parsed.names };
+}
+
+/** Plays the 2026 season with every squad's XI. Re-rolling gives a different (still seeded) outcome. */
+export async function runSeason(sessionId: string, reroll: boolean) {
+  const session = await load(sessionId);
+  if (session.status !== "COMPLETE") throw new Error("The season starts once the auction is complete.");
+  const existing = await prisma.seasonSim.findUnique({ where: { sessionId } });
+  if (existing && !reroll) return getSeason(sessionId);
+  const rerolls = existing ? existing.rerolls + (reroll ? 1 : 0) : 0;
+  const user = session.teams.find((t) => t.isUser)!;
+  const xi = session.playingXi.filter((s) => s.playerId).map((s) => s.playerId!) ;
+  const teams = session.teams.map((t) => ({
+    id: t.franchiseId,
+    name: t.franchise.name,
+    shortName: t.franchise.shortName,
+    players: t.members.map((m) => seasonPlayer(m.player)),
+    xi: t.isUser ? xi : undefined,
+  }));
+  const rng = mulberry32((session.seed ^ 0x5eed1234) + rerolls * 9973);
+  const result = simulateSeason(teams, rng);
+  const names: Record<string, string> = {};
+  for (const t of session.teams) for (const m of t.members) names[m.player.id] = m.player.name;
+  void user;
+  const json = JSON.stringify({ result, names });
+  await prisma.seasonSim.upsert({ where: { sessionId }, create: { sessionId, rerolls, json }, update: { rerolls, json } });
+  return getSeason(sessionId);
 }

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Crest, Money } from "@/components/Brand";
 import { RetentionPanel } from "@/components/RetentionPanel";
+import { ShortlistPanel } from "@/components/ShortlistPanel";
 import { useAuction } from "@/hooks/useAuction";
 import { sfx } from "@/lib/sfx";
 import { formatINR } from "@/lib/money";
@@ -55,7 +56,7 @@ export function AuctionRoom({ id }: { id: string }) {
   const resolved = d?.status === "LIVE" && (d.phase === "SOLD" || d.phase === "UNSOLD");
   const canSkip = d?.status === "LIVE" && !d.paused && (d.phase === "INTRO" || d.phase === "BIDDING" || d.phase === "HAMMER");
 
-  // Keyboard shortcuts: B bid, S skip, Enter start/next, Space pause, M/D match or decline an RTM.
+  // Keyboard shortcuts: B bid, S skip, Enter start/next, Space pause, M/D match or decline an RTM, R/N raise or stand when you hold the winning bid.
   const handlers = useRef({ game, d, canBid, canSkip, resolved });
   useEffect(() => {
     handlers.current = { game, d, canBid, canSkip, resolved };
@@ -70,8 +71,10 @@ export function AuctionRoom({ id }: { id: string }) {
       const key = e.key.toLowerCase();
       if (key === "b" && h.canBid) void h.game.bid();
       else if (key === "s" && h.canSkip) void h.game.skip();
-      else if (key === "m" && h.d.rtmPending?.isUser && h.d.rtmPending.canMatch && !h.d.paused) void h.game.rtm("match");
-      else if (key === "d" && h.d.rtmPending?.isUser && !h.d.paused) void h.game.rtm("decline");
+      else if (key === "m" && h.d.rtmPending?.awaitingUser && h.d.rtmPending.isUser && h.d.rtmPending.canMatch && !h.d.paused) void h.game.rtm("match");
+      else if (key === "d" && h.d.rtmPending?.awaitingUser && h.d.rtmPending.isUser && !h.d.paused) void h.game.rtm("decline");
+      else if (key === "r" && h.d.rtmPending?.awaitingUser && h.d.rtmPending.userIsWinner && h.d.rtmPending.canRaise && !h.d.paused) void h.game.rtm("raise");
+      else if (key === "n" && h.d.rtmPending?.awaitingUser && h.d.rtmPending.userIsWinner && !h.d.paused) void h.game.rtm("stand");
       else if (key === " " && h.d.status === "LIVE" && h.d.phase !== "RETENTION") {
         e.preventDefault();
         void h.game.setPaused(!h.d.paused);
@@ -95,7 +98,7 @@ export function AuctionRoom({ id }: { id: string }) {
         <div>
           <p className="text-[11px] uppercase tracking-[0.28em] gold">IPL Mega Auction</p>
           <h1 className="display text-2xl">
-            {d.phase === "RETENTION" ? "Retention window" : `Set ${d.setName} · Player ${d.currentLotIndex + 1} / ${d.lots.length}`}
+            {d.phase === "RETENTION" ? "Retention window" : d.phase === "SHORTLIST" ? "Accelerated round shortlist" : `Set ${d.setName} · Player ${d.currentLotIndex + 1} / ${d.lots.length}`}
           </h1>
         </div>
         <div className="flex flex-wrap justify-center gap-2 text-xs">
@@ -107,6 +110,7 @@ export function AuctionRoom({ id }: { id: string }) {
           <NavChip href={`/summary/${id}`} label="Summary" />
           <NavChip href={`/replay/${id}`} label="Replay" />
           <NavChip href={`/trade/${id}`} label="Trade" />
+          <NavChip href={`/season/${id}`} label="Season" />
           <NavChip href="/history" label="Saved" />
         </div>
         <div className="flex items-center justify-end gap-4 text-right">
@@ -137,7 +141,7 @@ export function AuctionRoom({ id }: { id: string }) {
           >
             Sound {sound ? "On" : "Off"}
           </button>
-          {d.status === "LIVE" && d.phase !== "RETENTION" && (
+          {d.status === "LIVE" && d.phase !== "RETENTION" && d.phase !== "SHORTLIST" && (
             <>
               <button
                 className="glass rounded-full px-3 py-1 text-[11px] uppercase tracking-widest"
@@ -215,9 +219,10 @@ export function AuctionRoom({ id }: { id: string }) {
           </div>
         </aside>
 
-        <section className={`glass relative overflow-hidden rounded-2xl p-5 ${d.phase === "RETENTION" ? "xl:col-span-3" : ""}`}>
+        <section className={`glass relative overflow-hidden rounded-2xl p-5 ${d.phase === "RETENTION" || d.phase === "SHORTLIST" ? "xl:col-span-3" : ""}`}>
+          {d.phase === "SHORTLIST" && d.shortlist && <ShortlistPanel data={d} busy={game.busy} onConfirm={(ids) => void game.shortlist(ids)} />}
           {d.phase === "RETENTION" && <RetentionPanel data={d} busy={game.busy} onConfirm={(ids) => void game.retain(ids)} />}
-          {d.phase !== "RETENTION" && player && (
+          {d.phase !== "RETENTION" && d.phase !== "SHORTLIST" && player && (
             <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
               <div className="flex flex-col items-center text-center">
                 <div
@@ -266,32 +271,7 @@ export function AuctionRoom({ id }: { id: string }) {
             </div>
           )}
 
-          {d.phase === "RTM" && d.rtmPending && (
-            <div role="alertdialog" aria-label="Right to Match" className="mt-8 rounded-xl border border-[var(--gold)]/50 bg-black/30 p-6 text-center">
-              <p className="text-[11px] uppercase tracking-[0.3em] gold">Right to Match</p>
-              <p className="display mt-2 text-4xl">
-                {d.rtmPending.isUser ? "Match the winning bid?" : `${d.rtmPending.shortName} are deciding…`}
-              </p>
-              <p className="mt-2 text-white/70">
-                {player?.name} · {formatINR(d.rtmPending.price)} ({d.teams.find((t) => t.franchiseId === d.rtmPending?.winnerId)?.franchise.shortName ?? "?"} won the bid)
-              </p>
-              {d.rtmPending.isUser && (
-                <div className="mt-5 flex flex-wrap justify-center gap-3">
-                  <button
-                    className="rounded-full bg-[var(--gold)] px-8 py-3 text-sm font-semibold text-black"
-                    disabled={game.busy || d.paused || !d.rtmPending.canMatch}
-                    onClick={() => void game.rtm("match")}
-                  >
-                    Use RTM at {formatINR(d.rtmPending.price)} <kbd>M</kbd>
-                  </button>
-                  <button className="glass rounded-full px-8 py-3 text-sm" disabled={game.busy || d.paused} onClick={() => void game.rtm("decline")}>
-                    Decline <kbd>D</kbd>
-                  </button>
-                  {!d.rtmPending.canMatch && <p className="w-full text-xs text-white/50">You cannot afford to match (purse or squad limits).</p>}
-                </div>
-              )}
-            </div>
-          )}
+          {d.phase === "RTM" && d.rtmPending && <RtmPanel d={d} busy={game.busy} onAct={(a) => void game.rtm(a)} />}
 
           {d.phase === "INTRO" && (
             <p role="status" className="display mt-8 text-center text-3xl gold">
@@ -347,7 +327,7 @@ export function AuctionRoom({ id }: { id: string }) {
         </aside>
       </div>
 
-      {d.phase !== "RETENTION" && (
+      {d.phase !== "RETENTION" && d.phase !== "SHORTLIST" && (
       <footer className="sticky bottom-0 border-t border-[var(--line)] bg-[#07080d]/90 px-4 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-5xl flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex gap-6">
@@ -446,6 +426,73 @@ function SoldBanner({ session }: { session: AuctionView }) {
       <p className="mt-2 text-xl">{lot.player.name}</p>
       <p className="display mt-1 text-4xl">{formatINR(lot.soldPrice ?? lot.currentBid)}</p>
       <p className="mt-3 text-sm uppercase tracking-[0.3em] text-white/50">Bought by {team?.franchise.name ?? "—"}</p>
+    </div>
+  );
+}
+
+function RtmPanel({ d, busy, onAct }: { d: AuctionView; busy: boolean; onAct: (action: "match" | "decline" | "raise" | "stand") => void }) {
+  const r = d.rtmPending!;
+  const player = d.currentLot?.player;
+  const winner = d.teams.find((t) => t.franchiseId === r.winnerId)?.franchise.shortName ?? "?";
+  const off = busy || d.paused;
+  let title = `${r.shortName} are deciding…`;
+  let blurb = `${player?.name} · ${formatINR(r.price)} (${winner} won the bid)`;
+  let actions: React.ReactNode = null;
+
+  if (r.stage === "DECIDE") {
+    title = r.isUser ? "Use your Right to Match?" : `${r.shortName} are deciding whether to use their RTM…`;
+    if (r.isUser) {
+      actions = (
+        <>
+          <button className="rounded-full bg-[var(--gold)] px-8 py-3 text-sm font-semibold text-black" disabled={off || !r.canMatch} onClick={() => onAct("match")}>
+            Use RTM <kbd>M</kbd>
+          </button>
+          <button className="glass rounded-full px-8 py-3 text-sm" disabled={off} onClick={() => onAct("decline")}>
+            Let him go <kbd>D</kbd>
+          </button>
+          {!r.canMatch && <p className="w-full text-xs text-white/50">You cannot afford to match (purse, squad or composition limits).</p>}
+        </>
+      );
+    }
+  } else if (r.stage === "COUNTER") {
+    title = r.userIsWinner ? `${r.shortName} used RTM — raise your bid?` : `${winner} may raise once…`;
+    blurb = `${player?.name} · currently ${formatINR(r.price)}`;
+    if (r.userIsWinner) {
+      actions = (
+        <>
+          <button className="rounded-full bg-[var(--gold)] px-8 py-3 text-sm font-semibold text-black" disabled={off || !r.canRaise} onClick={() => onAct("raise")}>
+            Raise to {formatINR(r.raiseTo)} <kbd>R</kbd>
+          </button>
+          <button className="glass rounded-full px-8 py-3 text-sm" disabled={off} onClick={() => onAct("stand")}>
+            Stand at {formatINR(r.price)} <kbd>N</kbd>
+          </button>
+        </>
+      );
+    }
+  } else {
+    title = r.isUser ? "Match the final price?" : `${r.shortName} are deciding whether to match…`;
+    blurb = `${player?.name} · final price ${formatINR(r.price)}`;
+    if (r.isUser) {
+      actions = (
+        <>
+          <button className="rounded-full bg-[var(--gold)] px-8 py-3 text-sm font-semibold text-black" disabled={off || !r.canMatch} onClick={() => onAct("match")}>
+            Match {formatINR(r.price)} <kbd>M</kbd>
+          </button>
+          <button className="glass rounded-full px-8 py-3 text-sm" disabled={off} onClick={() => onAct("decline")}>
+            Decline <kbd>D</kbd>
+          </button>
+          {!r.canMatch && <p className="w-full text-xs text-white/50">You cannot afford to match (purse, squad or composition limits).</p>}
+        </>
+      );
+    }
+  }
+
+  return (
+    <div role="alertdialog" aria-label="Right to Match" className="mt-8 rounded-xl border border-[var(--gold)]/50 bg-black/30 p-6 text-center">
+      <p className="text-[11px] uppercase tracking-[0.3em] gold">Right to Match · {r.stage === "DECIDE" ? "step 1 of 3" : r.stage === "COUNTER" ? "step 2 of 3" : "step 3 of 3"}</p>
+      <p className="display mt-2 text-4xl">{title}</p>
+      <p className="mt-2 text-white/70">{blurb}</p>
+      {actions && <div className="mt-5 flex flex-wrap justify-center gap-3">{actions}</div>}
     </div>
   );
 }

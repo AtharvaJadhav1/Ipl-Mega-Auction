@@ -4,7 +4,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { Crest } from "@/components/Brand";
 import { formatINR } from "@/lib/money";
-import "./setup.css";
 
 function SetupInner() {
   const params = useSearchParams();
