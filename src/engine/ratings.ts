@@ -13,11 +13,13 @@ export type GameRatings = {
   label: "GAME RATING";
 };
 
-function clamp(n: number) {
-  return Math.max(40, Math.min(99, Math.round(n)));
+function clamp(n: number, lo = 40, hi = 99) {
+  return Math.max(lo, Math.min(hi, Math.round(n)));
 }
 
-export function gameRatings(player: {
+const unit = (n: number) => Math.max(0, Math.min(1, n));
+
+export type RatingInput = {
   id?: string;
   role: string;
   capped: boolean;
@@ -33,9 +35,13 @@ export function gameRatings(player: {
   megaBasePrice: number;
   age: number | null;
   bowlingStyle: string | null;
-}): GameRatings {
+  /** The marquee set marks genuine superstars. */
+  setCode?: string;
+};
+
+export function gameRatings(player: RatingInput): GameRatings {
   if (player.id === undefined) return computeRatings(player);
-  const key = `${player.id}|${player.runs}|${player.wickets}|${player.strikeRate}|${player.economy}|${player.actual2026Price}|${player.megaBasePrice}|${player.age}|${player.role}|${player.capped}|${player.sixes}|${player.battingAvg}|${player.bowlingAvg}|${player.bowlingStyle}`;
+  const key = `${player.id}|${player.runs}|${player.wickets}|${player.strikeRate}|${player.economy}|${player.actual2026Price}|${player.megaBasePrice}|${player.age}|${player.role}|${player.capped}|${player.sixes}|${player.battingAvg}|${player.bowlingAvg}|${player.bowlingStyle}|${player.setCode}`;
   let hit = cache.get(key);
   if (!hit) {
     hit = computeRatings(player);
@@ -47,23 +53,83 @@ export function gameRatings(player: {
 
 const cache = new Map<string, GameRatings>();
 
-type RatingInput = Parameters<typeof gameRatings>[0];
+/**
+ * Reputation on a ~45-95 scale. Marquee-set players are the genuine superstars. Everyone else is placed by what the
+ * market paid (capped at ₹8 Cr so one-off bidding frenzies don't create superstars) with a lift for capped internationals
+ * and a discount for uncapped players.
+ */
+/** Established superstars (tier S) and top-flight regulars (tier A), keyed by player id. Everyone else is placed by the market. */
+const TIER_S = new Set([
+  "virat-kohli", "jasprit-bumrah", "rohit-sharma", "rashid-khan", "jos-buttler", "pat-cummins", "hardik-pandya", "shubman-gill",
+  "rishabh-pant", "ms-dhoni", "suryakumar-yadav", "yashasvi-jaiswal", "kl-rahul", "heinrich-klaasen", "nicholas-pooran",
+]);
+const TIER_A = new Set([
+  "jofra-archer", "kagiso-rabada", "trent-boult", "sunil-narine", "shreyas-iyer", "mohammed-siraj", "yuzvendra-chahal",
+  "ravindra-jadeja", "cameron-green", "travis-head", "abhishek-sharma", "sai-sudharsan", "ruturaj-gaikwad", "tilak-varma",
+  "rinku-singh", "arshdeep-singh", "varun-chakaravarthy", "mitchell-starc", "phil-salt", "ishan-kishan",
+  "axar-patel", "kuldeep-yadav", "mohammed-shami", "tim-david", "marcus-stoinis", "andre-russell", "matheesha-pathirana",
+  "vaibhav-sooryavanshi", "liam-livingstone", "dhruv-jurel", "sanju-samson",
+]);
+
+function reputation(p: RatingInput): number {
+  if (p.id && TIER_S.has(p.id)) return 86;
+  if (p.id && TIER_A.has(p.id)) return 78;
+  const crore = Math.min(8, (p.actual2026Price ?? p.megaBasePrice) / 10_000_000);
+  const marketed = 48 + 11 * Math.log(1 + crore / 0.5);
+  if (p.setCode === "M1") return Math.max(82, Math.min(92, 82 + (marketed - 60) * 0.3));
+  return Math.max(45, Math.min(88, marketed + (p.capped ? 2 : -6)));
+}
+
+/** Stats move an established player's rating around his reputation, but only within a band. */
+function banded(value: number, rep: number, tiered: boolean) {
+  return tiered ? Math.max(rep - 8, Math.min(rep + 4, value)) : value;
+}
 
 function computeRatings(player: RatingInput): GameRatings {
-  const batForm = player.runs != null ? Math.min(30, player.runs / 25) : player.capped ? 12 : 6;
+  const rep = reputation(player);
+  const tiered = !!player.id && (TIER_S.has(player.id) || TIER_A.has(player.id));
+  const isBowler = player.role === "BOWLER";
+  const isAllRounder = player.role === "ALL_ROUNDER";
+
+  // Batting: real 2026 numbers when we have them, blended with reputation; reputation alone otherwise.
+  const statBat =
+    player.runs != null
+      ? 38 +
+        unit(player.runs / 800) * 34 +
+        unit(((player.strikeRate ?? 125) - 120) / 80) * 14 +
+        unit(((player.battingAvg ?? 20) - 18) / 37) * 12
+      : null;
+  const batBase = isBowler ? 35 + (rep - 45) * 0.35 : isAllRounder ? rep - 6 : rep;
+  const batting = clamp(banded(statBat != null ? 0.6 * statBat + 0.4 * (isBowler ? Math.max(batBase, 55) : rep) : batBase, isBowler ? batBase : rep, tiered && !isBowler));
+
+  // Bowling likewise.
+  const statBowl =
+    player.wickets != null
+      ? 38 +
+        unit(player.wickets / 28) * 34 +
+        unit((9.8 - (player.economy ?? 9.5)) / 3.3) * 16 +
+        (player.bowlingAvg != null ? unit((34 - player.bowlingAvg) / 16) * 8 : 0)
+      : null;
+  const bowlBase = isBowler ? rep : isAllRounder ? rep - 6 : 30 + (rep - 45) * 0.25;
+  const bowling = clamp(banded(statBowl != null ? 0.6 * statBowl + 0.4 * (isBowler || isAllRounder ? rep : Math.max(bowlBase, 55)) : bowlBase, isBowler ? rep : bowlBase, tiered && (isBowler || isAllRounder)));
+
+  // Overall follows the player's job: specialists are rated on their craft, all-rounders on both.
+  let overall: number;
+  if (isBowler) overall = 0.92 * bowling + 0.08 * batting;
+  else if (isAllRounder) overall = 0.58 * Math.max(batting, bowling) + 0.42 * Math.min(batting, bowling) + 3;
+  else overall = 0.94 * batting + 0.06 * bowling + (player.role === "WICKETKEEPER" ? 1 : 0);
+  const ageAdj = player.age == null ? 0 : player.age < 22 ? 1 : player.age > 36 ? -3 : 0;
+  // Stretch the top end so genuine stars separate from solid players.
+  const stretched = overall > 50 ? 50 + (overall - 50) * 1.15 : overall;
+  overall = clamp(stretched + ageAdj);
+
+  const six = player.sixes != null ? Math.min(15, player.sixes / 3) : 6;
   const sr = player.strikeRate != null ? Math.min(20, (player.strikeRate - 120) / 6) : 8;
   const avg = player.battingAvg != null ? Math.min(15, player.battingAvg / 4) : 7;
-  const six = player.sixes != null ? Math.min(15, player.sixes / 3) : 6;
-  const batting = clamp(48 + batForm + sr + (player.role === "BOWLER" ? -8 : 6));
-
-  const wkts = player.wickets != null ? Math.min(30, player.wickets * 1.1) : player.role.includes("BOWL") || player.role === "ALL_ROUNDER" ? 12 : 4;
   const eco = player.economy != null ? Math.min(18, (11 - player.economy) * 6) : 8;
-  const bowling = clamp(46 + wkts + eco + (player.role === "BATTER" || player.role === "WICKETKEEPER" ? -10 : 6));
-
-  const market = player.actual2026Price != null ? Math.min(18, player.actual2026Price / 20_000_000) : player.megaBasePrice / 20_000_000;
+  const wkts = player.wickets != null ? Math.min(30, player.wickets * 1.1) : isBowler || isAllRounder ? 12 : 4;
+  const batForm = player.runs != null ? Math.min(30, player.runs / 25) : player.capped ? 12 : 6;
   const exp = player.capped ? 12 : 6;
-  const ageAdj = player.age == null ? 0 : player.age < 23 ? 4 : player.age > 36 ? -6 : 2;
-  const overall = clamp((batting + bowling) / 2 + market + exp / 2 + ageAdj + (player.role === "ALL_ROUNDER" ? 4 : 0));
 
   const spin = /spin|orthodox|wrist|leg|off/i.test(player.bowlingStyle ?? "") ? clamp(bowling + 6) : clamp(bowling - 12);
   return {
@@ -72,7 +138,7 @@ function computeRatings(player: RatingInput): GameRatings {
     bowling,
     powerHitting: clamp(42 + six + sr),
     consistency: clamp(50 + avg + (player.capped ? 8 : 0)),
-    deathBowling: clamp(bowling + (player.role === "BOWLER" ? 4 : 0)),
+    deathBowling: clamp(bowling + (isBowler ? 4 : 0)),
     powerplayBowling: clamp(bowling + eco / 2),
     spin,
     fielding: clamp(68 + (player.age && player.age < 28 ? 8 : 0) + (player.role === "WICKETKEEPER" ? 6 : 0)),
