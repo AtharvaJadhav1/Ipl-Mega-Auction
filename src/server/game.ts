@@ -9,6 +9,7 @@ import { gameRatings } from "@/engine/ratings";
 import { DEFAULT_RULES, parseRules, type AuctionRules } from "@/engine/rules";
 import { aiRetentionPicks, CAPPED_SLABS, MAX_CAPPED_RETAINED, MAX_RETAINED, MAX_UNCAPPED_RETAINED, planRetention, rtmCardsAfterRetention, UNCAPPED_SLAB } from "@/engine/retention";
 import { compositionError } from "@/engine/composition";
+import { planFill } from "@/engine/fill";
 import { simulateSeason, type SeasonPlayer, type SeasonResult } from "@/engine/season";
 import { areRivals, franchiseGaps } from "@/engine/strategy";
 import { evaluateTrade } from "@/engine/trade";
@@ -1146,10 +1147,9 @@ export async function nextPlayer(sessionId: string) {
       await addEvent(sessionId, "SHORTLIST_OPEN", "Accelerated round: franchises are drawing up their shortlists.");
       return getSession(sessionId);
     }
-    await prisma.auctionSession.update({ where: { id: sessionId }, data: { status: "COMPLETE", phase: "COMPLETE" } });
-    return getSession(sessionId);
+    return completeAuction(session);
   }
-  const next = session.lots[nextIndex];
+  const next =session.lots[nextIndex];
   const setChanged = next.setCode !== session.lots[session.currentLotIndex].setCode;
   await prisma.auctionLot.update({ where: { id: next.id }, data: { status: "LIVE" } });
   await prisma.auctionSession.update({
@@ -1170,6 +1170,44 @@ export async function nextPlayer(sessionId: string) {
     { playerId: next.playerId },
   );
   return getSession(sessionId);
+}
+
+/** Closes the auction. AI franchises still short of the minimum squad sign the cheapest legal unsold players first. */
+async function completeAuction(session: FullSession) {
+  const rules = parseRules(session.rulesJson);
+  const unsold = new Map(session.lots.filter((l) => l.status === "UNSOLD").map((l) => [l.playerId, l]));
+  const needy = session.teams.filter((t) => !t.isUser).sort((a, b) => a.members.length - b.members.length);
+  for (const t of needy) {
+    const candidates = [...unsold.values()].map((l) => ({
+      id: l.playerId,
+      role: l.player.role,
+      isOverseas: l.player.isOverseas,
+      price: lotBase(session, l),
+      overall: gameRatings(l.player).overall,
+    }));
+    for (const p of planFill({ purse: t.purse, overseasCount: t.overseasCount, members: t.members.map((m) => ({ role: m.player.role })) }, candidates, rules)) {
+      const lot = unsold.get(p.id)!;
+      unsold.delete(p.id);
+      await prisma.$transaction([
+        prisma.auctionLot.update({
+          where: { id: lot.id },
+          data: { status: "SOLD", soldPrice: p.price, soldTeamId: t.franchiseId, currentBid: p.price, currentBidderId: t.franchiseId },
+        }),
+        prisma.sessionSquadMember.create({ data: { sessionTeamId: t.id, playerId: p.id, price: p.price, source: "auction" } }),
+        prisma.sessionTeam.update({
+          where: { id: t.id },
+          data: { purse: { decrement: p.price }, overseasCount: { increment: lot.player.isOverseas ? 1 : 0 } },
+        }),
+      ]);
+      await addEvent(session.id, "PLAYER_SOLD", `${t.franchise.shortName} fill out the squad with ${lot.player.name} at ${formatINR(p.price)}.`, {
+        playerId: p.id,
+        teamId: t.franchiseId,
+        amount: p.price,
+      });
+    }
+  }
+  await prisma.auctionSession.update({ where: { id: session.id }, data: { status: "COMPLETE", phase: "COMPLETE" } });
+  return getSession(session.id);
 }
 
 async function startAccelerated(session: FullSession, unsold: FullSession["lots"]) {
@@ -1231,10 +1269,7 @@ export async function confirmShortlist(sessionId: string, userPlayerIds: string[
   for (const id of userPlayerIds) if (!byPlayer.has(id)) throw new Error("You can only shortlist players who went unsold.");
   const chosen = new Set([...userPlayerIds, ...aiNominations(session).keys()]);
   const selected = unsold.filter((l) => chosen.has(l.playerId));
-  if (!selected.length) {
-    await prisma.auctionSession.update({ where: { id: sessionId }, data: { status: "COMPLETE", phase: "COMPLETE" } });
-    return getSession(sessionId);
-  }
+  if (!selected.length) return completeAuction(session);
   await addEvent(sessionId, "SHORTLIST", `Accelerated round shortlist: ${selected.length} players return to the floor.`);
   return startAccelerated(session, selected);
 }
@@ -1359,7 +1394,7 @@ export async function importCsv(csv: string) {
       country,
       role,
       isOverseas: rec.isOverseas ? rec.isOverseas.toLowerCase() === "true" : country !== "India",
-      capped: rec.capped.toLowerCase() === "true",
+      capped: (rec.capped ?? "").toLowerCase() === "true",
       basePrice: base,
       megaBasePrice: megaBase,
       setCode,

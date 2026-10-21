@@ -129,8 +129,9 @@ function playMatch(a: Strength, b: Strength, rng: () => number): MatchOutcome {
     winner,
     oversA: 20,
     oversB: winner === "B" ? chaseOvers() : 20,
-    wicketsA: wickets(b),
-    wicketsB: wickets(a),
+    // Wickets are taken by a side's own bowlers, so they follow that side's bowling strength.
+    wicketsA: wickets(a),
+    wicketsB: wickets(b),
   };
 }
 

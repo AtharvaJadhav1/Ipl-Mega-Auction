@@ -5,6 +5,35 @@ import { pickXI, simulateSeason, type SeasonPlayer, type SeasonTeamInput } from 
 
 const rules = { minSquadSize: 18, minWicketkeepers: 2, minBowlers: 6 };
 
+describe("season wickets", () => {
+  it("credits wickets according to the bowling side's own strength", () => {
+    const side = (id: string, bowl: number): SeasonTeamInput => ({
+      id,
+      name: id,
+      shortName: id,
+      players: Array.from({ length: 13 }, (_, i) => ({
+        id: `${id}${i}`,
+        name: `${id}${i}`,
+        role: i === 0 ? "BOWLER" : i === 1 ? "WICKETKEEPER" : "BATTER",
+        isOverseas: false,
+        overall: 60,
+        batting: 60,
+        bowling: i === 0 ? bowl : 30,
+      })),
+    });
+    let strong = 0;
+    let weak = 0;
+    for (let seed = 1; seed <= 20; seed++) {
+      const r = simulateSeason([side("s", 95), side("w", 35)], mulberry32(seed));
+      for (const l of r.topBowlers) {
+        if (l.playerId === "s0") strong += l.wickets;
+        if (l.playerId === "w0") weak += l.wickets;
+      }
+    }
+    expect(strong).toBeGreaterThan(weak);
+  });
+});
+
 describe("composition rule", () => {
   const roles = (spec: Record<string, number>) => Object.entries(spec).flatMap(([role, n]) => Array.from({ length: n }, () => ({ role })));
 
