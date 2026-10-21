@@ -32,9 +32,12 @@ export function useAuction(id: string) {
   /** Runs actions one at a time; user clicks queue behind an in-flight tick instead of being dropped. */
   const run = useCallback((path: string, opts: { silent?: boolean; body?: unknown } = {}) => {
     const task = queue.current.then(async () => {
-      pending.current += 1;
-      setBusy(true);
-      if (!opts.silent) setError(null);
+      // Background ticks must not disable the buttons, or every tick makes the controls flicker and swallows clicks.
+      if (!opts.silent) {
+        pending.current += 1;
+        setBusy(true);
+        setError(null);
+      }
       try {
         const res = await fetch(path, {
           method: "POST",
@@ -57,8 +60,10 @@ export function useAuction(id: string) {
         setRetry((n) => n + 1);
         return null;
       } finally {
-        pending.current -= 1;
-        if (pending.current === 0) setBusy(false);
+        if (!opts.silent) {
+          pending.current -= 1;
+          if (pending.current === 0) setBusy(false);
+        }
       }
     });
     queue.current = task;
@@ -86,22 +91,17 @@ export function useAuction(id: string) {
     }
     // Show the result for a few seconds, then move to the next player automatically.
     if (data.phase === "SOLD" || data.phase === "UNSOLD") {
+      // An unsold lot has nothing to celebrate, so it clears sooner than a sale.
+      const shown = RESULT_MS[data.speed] ?? 3000;
       const t = setTimeout(() => {
         void run(`/api/auction/${id}/next`, { silent: true });
-      }, failures.current > 0 ? RETRY_MS : (RESULT_MS[data.speed] ?? 3000));
+      }, failures.current > 0 ? RETRY_MS : data.phase === "UNSOLD" ? Math.round(shown * 0.5) : shown);
       return () => clearTimeout(t);
     }
     if (["COMPLETE", "RETENTION", "SHORTLIST"].includes(data.phase)) return;
     // The user's Right to Match decision is theirs alone.
     if (data.phase === "RTM" && data.rtmPending?.awaitingUser) return;
-    const user = data.userTeam;
-    const lot = data.currentLot;
-    const passed = data.passedTeamIds;
-    const userOut = passed.includes(user.franchiseId);
-    // Rivals keep bidding on their own; the room only pauses when the user alone could still open the lot.
-    const aiLeft = data.teams.filter((t) => !t.isUser && !passed.includes(t.franchiseId)).length;
-    const waitingOnUser = data.phase !== "RTM" && !userOut && lot?.currentBidderId == null && aiLeft === 0;
-    if (waitingOnUser) return;
+    // The room never waits for the user: with no bids it counts down and the lot goes unsold.
     const ms = failures.current > 0 ? RETRY_MS : (SPEED[data.speed] ?? 1000);
     const t = setTimeout(() => {
       void run(`/api/auction/${id}/tick`, { silent: true });

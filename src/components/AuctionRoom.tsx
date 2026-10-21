@@ -356,7 +356,7 @@ export function AuctionRoom({ id }: { id: string }) {
               disabled={!canSkip || game.busy}
               onClick={() => game.skip()}
             >
-              Skip player — see result <kbd>S</kbd>
+              {game.busy && canSkip ? "Resolving…" : <>Skip player — see result <kbd>S</kbd></>}
             </button>
           </div>
         </div>

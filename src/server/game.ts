@@ -459,6 +459,8 @@ export async function confirmRetention(sessionId: string, pickIds: string[]) {
 }
 
 export async function getSession(id: string) {
+  // Internal loops (skip) discard the payload, so don't pay for the heavy query.
+  if (quietMode.getStore()) return {} as never;
   const session = await prisma.auctionSession.findUnique({
     where: { id },
     include: includeSession,
@@ -791,7 +793,8 @@ async function applyBid(session: FullSession, lot: FullSession["lots"][number], 
     }
   }
 
-  // Paddle war: two teams trading blows.
+  // Paddle war: two teams trading blows (skipped while a lot is being fast-forwarded).
+  if (quietMode.getStore()) return;
   const recent = await prisma.bid.findMany({ where: { lotId: lot.id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 4 });
   if (recent.length === 4) {
     const [a, b, c, d] = recent.map((r) => r.teamId);
@@ -811,8 +814,16 @@ async function load(id: string) {
   return session;
 }
 
+/** Same as `load` without the event/bid history and XI that only the client payload needs. */
+async function loadLite(id: string): Promise<FullSession> {
+  const session = await prisma.auctionSession.findUnique({ where: { id }, include: { teams: includeSession.teams, lots: includeSession.lots } });
+  if (!session) throw new Error("Auction not found.");
+  return { ...session, events: [], bids: [], playingXi: [] };
+}
+
 export async function tickAuction(sessionId: string) {
-  const session = await load(sessionId);
+  const quiet = !!quietMode.getStore();
+  const session = quiet ? await loadLite(sessionId) : await load(sessionId);
   if (session.status !== "LIVE" || session.paused) return decorate(session);
   if (session.phase === "INTRO" || session.phase === "SOLD" || session.phase === "UNSOLD" || session.phase === "RETENTION" || session.phase === "SHORTLIST") return decorate(session);
   const lot = session.lots[session.currentLotIndex];
@@ -824,16 +835,13 @@ export async function tickAuction(sessionId: string) {
   const rng = mulberry32(session.seed + session.currentLotIndex * 997 + session.tickCount * 7919 + lot.currentBid);
   const passed = JSON.parse(lot.passedTeamIds) as string[];
   const user = session.teams.find((t) => t.isUser)!;
-  const userOut = passed.includes(user.franchiseId);
   // The floor never waits for the user: rivals keep bidding (and the hammer keeps falling) whether or not the user acts.
   const aiTeams = shuffle(
     session.teams.filter((t) => !t.isUser && !passed.includes(t.franchiseId)),
     rng,
   );
-  // Nobody has bid and every rival has stepped away: only the user can open the bidding.
-  if (!userOut && lot.currentBidderId == null && aiTeams.length === 0) return decorate(session);
-
   let acted = false;
+  let bid: { teamId: string; amount: number } | null = null;
   let passedChanged = false;
   for (const t of aiTeams) {
     if (lot.currentBidderId === t.franchiseId) continue;
@@ -864,6 +872,7 @@ export async function tickAuction(sessionId: string) {
       }
       await applyBid(session, lot, t.franchiseId, decision.amount);
       acted = true;
+      bid = { teamId: t.franchiseId, amount: decision.amount };
       break;
     }
   }
@@ -871,8 +880,14 @@ export async function tickAuction(sessionId: string) {
     await prisma.auctionLot.update({ where: { id: lot.id }, data: { passedTeamIds: JSON.stringify(passed) } });
   }
 
-  const refreshed = await load(sessionId);
-  const liveLot = refreshed.lots[refreshed.currentLotIndex];
+  // Ticks only change this lot's bid and pass list, so rebuild the state in memory instead of reloading it.
+  const liveLot = {
+    ...lot,
+    currentBid: bid?.amount ?? lot.currentBid,
+    currentBidderId: bid?.teamId ?? lot.currentBidderId,
+    passedTeamIds: JSON.stringify(passed),
+  };
+  const refreshed: FullSession = { ...session, lots: session.lots.map((l) => (l.id === lot.id ? liveLot : l)) };
   const passedNow = JSON.parse(liveLot.passedTeamIds) as string[];
   const nextAmount = nextBidAmount(liveLot.currentBid, lotBase(refreshed, liveLot));
   const interested = refreshed.teams.filter((t) => {
@@ -886,13 +901,20 @@ export async function tickAuction(sessionId: string) {
   }
 
   const someoneBid = liveLot.currentBidderId != null;
+  // Nobody else can still bid: waiting out the countdown would only make the user sit through it.
+  const othersCanStillBid = interested.some((t) => t.franchiseId !== liveLot.currentBidderId);
   if (!someoneBid) {
-    // No hammer without a bid: keep the floor open until somebody opens or everybody is out.
     if (interested.length === 0) return markUnsold(refreshed, liveLot);
+    // Only the user could still open the bidding: give a short countdown instead of waiting for them to skip.
+    if (!interested.every((t) => t.isUser) || quiet) return getSession(sessionId);
+    const count = refreshed.hammerCount + 1;
+    if (count >= 3) return markUnsold(refreshed, liveLot);
+    await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "HAMMER", hammerCount: count } });
+    await addEvent(sessionId, count === 1 ? "GOING_ONCE" : "GOING_TWICE", count === 1 ? "No bids yet. Going once..." : "Going twice...", { playerId: liveLot.playerId });
     return getSession(sessionId);
   }
 
-  const hammer = refreshed.hammerCount + 1;
+  const hammer = othersCanStillBid ? refreshed.hammerCount + 1 : 3;
   if (hammer === 1) {
     await prisma.auctionSession.update({ where: { id: sessionId }, data: { phase: "HAMMER", hammerCount: 1 } });
     await addEvent(sessionId, "GOING_ONCE", "Going once...", { playerId: liveLot.playerId });
@@ -1117,9 +1139,13 @@ export async function skipPlayer(sessionId: string) {
   }
 
   for (let i = 0; i < 600; i++) {
-    const cur = await load(sessionId);
-    if (cur.phase === "SOLD" || cur.phase === "UNSOLD") break;
-    const curLot = cur.lots[cur.currentLotIndex];
+    // Only the phase and the RTM state matter here, so skip the heavy session load.
+    const cur = await prisma.auctionSession.findUnique({ where: { id: sessionId }, select: { phase: true, currentLotIndex: true } });
+    if (!cur || cur.phase === "SOLD" || cur.phase === "UNSOLD") break;
+    const curLot =
+      cur.phase === "RTM"
+        ? await prisma.auctionLot.findFirst({ where: { sessionId }, orderBy: { orderIndex: "asc" }, skip: cur.currentLotIndex })
+        : null;
     await quietMode.run(true, async () => {
       if (cur.phase === "RTM" && curLot) {
         const stage = curLot.rtmStage ?? "DECIDE";
